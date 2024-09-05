@@ -10,12 +10,26 @@
 //#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
 #define SSID "MiFibra-21E0_EXT"
 #define PASS "2SSxDxcYNh"
+uint32_t idNumber = 0;
+String idSmartDrip = " Pablo Terraza ";
+String idUser = " PabloG ";
 const int MAX_CONNECT = 10;
 bool wifiConnected = false;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
 void InitWiFi();
-
+/* Función para calcular CRC32 */
+uint32_t crc32(const uint8_t *data, size_t length) {
+  uint32_t crc = 0xFFFFFFFF;
+  while (length--) {
+    uint8_t byte = *data++;
+    crc = crc ^ byte;
+    for (uint8_t i = 0; i < 8; i++) {
+      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return ~crc;
+}
 /* Email Config */
 #define SMTP_HOST "smtp.gmail.com"
 #define SMTP_PORT 465 
@@ -86,8 +100,7 @@ unsigned long TiempoDHT = 0;
 int getHigroValue = 0;
 int substrateHumidity = 0;
 int counter = 0;
-bool exitEstatus = false;
-int estadoSalidas = 0;
+bool outputEstatus = false;
 const int dry = 445;
 const int wet = 2;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
 int dripTime, dripTimeCheck = 0;
@@ -98,7 +111,7 @@ int dripHumidityLimit = 45;
 /* Variables para el cálculo del caudal */
 volatile int pulses = 0;
 float caudal = 0.0;
-float waterVolume = 0.0; // redefinir variables de caudal de agua
+float waterVolume = 0.0; // *** redefinir variables de caudal de agua
 float totalLitros = 0.0;
 unsigned long oldTime = 0;
 bool flowMeterEstatus = false;
@@ -116,7 +129,7 @@ unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 /* Contadores de días y semanas */ 
 int dayCounter = 1;
-/* Arreglo con los nombres de los días de la semana */ 
+/* Array con los nombres de los días de la semana */ 
 const char* diasSemana[] = {"Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"};
 /* Mensaje semanal */
 void weeklyMesage();
@@ -139,6 +152,23 @@ void setup() {
   Serial.begin(9600);
   /* Inicio preferences */
   preferences.begin("sensor_data", false);
+  idNumber = preferences.getInt("device_id", 0); // Obtener el id único del dispositivo almacenado
+  if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
+    String macAddress = WiFi.macAddress();  // Inicializa la dirección MAC como un ID único y convierte la dirección MAC a un array de bytes
+    Serial.print("Dirección MAC: ");
+    Serial.println(macAddress);
+    uint8_t macBytes[6];
+    sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
+           &macBytes[0], &macBytes[1], &macBytes[2], 
+           &macBytes[3], &macBytes[4], &macBytes[5]);
+    uint32_t hash = crc32(macBytes, 6);
+    // Muestra el hash en el monitor serial
+    Serial.print("ID único (CRC32): ");
+    Serial.println(hash, HEX);
+    preferences.putInt("device_id", idNumber);
+  }
+  Serial.print("ID único CRC32: ");
+  Serial.println(idNumber);
   // Recupera el contador del día si el ESP32 se reinicia
   //dayCounter = preferences.getInt("dayCounter", 1);
   /* Inicio conexión WiFi */
@@ -168,14 +198,13 @@ void setup() {
   pinMode(pinLed, OUTPUT);
   /* Configuración de la interrupción para detectar los pulsos del sensor de flujo */
   attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
-
   /* Temporizador */
   timer1 = timerBegin(0, 80, true);
   timerAttachInterrupt(timer1, &onTimer1, true);
   timerAlarmWrite(timer1, 1000000, true);
   timerAlarmEnable(timer1);
   timerAlarmDisable(timer1);
-  
+  /* Configuración de emails */
   smtp.debug(1);
   smtp.callback(smtpCallback);
   session.server.host_name = SMTP_HOST;
@@ -270,7 +299,6 @@ void loop() {
   Serial.println(dripTime);
   Serial.print("Irrrigation humidity: ");
   Serial.println(dripHumidity);
-
   /* Comprobacion horario riego */
   if(withinSchedule){  //Horario de riego activo
     getHigroValues();
@@ -283,11 +311,17 @@ void loop() {
       preferences.putInt("dayWeek", dayWeek);
       dripActived = false;
       // Si es el último día de la semana, envía el correo y reinicia el contador
-      if (dayWeek > 7) {
+      if (dayWeek > 6) {    // *** Cambio 7 por 6 pendiente de revisar según el dato de dayWeek
           weeklyMesage();
           dayWeek = 0;
           preferences.putInt("dayWeek", dayWeek);
       }
+      /* Posible elegir que dia se quiere enviar el correo
+      if(dayWeek == 6){
+        weeklyMesage();
+          dayWeek = 0;
+          preferences.putInt("dayWeek", dayWeek);
+      } */
     }
     Serial.println("Active irrigation schedule");
     if(!mailActiveScheduleCheck){
@@ -311,11 +345,11 @@ void loop() {
         Serial.print(" L/min - Volumen acumulado: ");
         Serial.print(totalLitros);
         Serial.println(" L.");
-        if(!mailDripOnSended){  //  Variable mailRiego??? cuando se activa???
+        if(!mailDripOnSended){  
           mailSmartDripOn();
         }
       }   
-      dripValve = true; // revisar si conviene activar esta variable aqui o dentro del metodo de apertura
+      dripValve = true; // *** revisar si conviene activar esta variable aqui o dentro del metodo de apertura
       Serial.print("Salida ValvulaRiego: ");
       Serial.println(dripValve);
       Serial.print("Estado sensor flujo: ");
@@ -402,16 +436,10 @@ void openDripValve(){
   digitalWrite(dripValveGND1, LOW);
   activePulse = true;
   startTimePulse = millis();
-  exitEstatus = digitalRead(dripValveVin1);
-  estadoSalidas = digitalRead(dripValveVin1);
-  Serial.print("VálvulaRiegoVin: ");
-  Serial.println(estadoSalidas + " --- ");
-  Serial.println(exitEstatus);
-  exitEstatus = digitalRead(dripValveGND1);
-  estadoSalidas = digitalRead(dripValveGND1);
-  Serial.print("VálvulaRiegoGND: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
+  outputEstatus = digitalRead(dripValveVin1);
+  Serial.println("VálvulaRiegoVin: " + outputEstatus);
+  outputEstatus = digitalRead(dripValveGND1);
+  Serial.println("VálvulaRiegoGND: " + outputEstatus);
   dripValve = true;
   Serial.println("Pulso de apertura Activo");
   delay(50);
@@ -426,16 +454,10 @@ void closeDripValve(){
   digitalWrite(dripValveGND1, HIGH);
   activePulse = true;
   startTimePulse = millis();
-  exitEstatus = digitalRead(dripValveVin1);
-  estadoSalidas = digitalRead(dripValveVin1);
-  Serial.print("VálvulaRiegoVin: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
-  exitEstatus = digitalRead(dripValveGND1);
-  estadoSalidas = digitalRead(dripValveGND1);
-  Serial.print("VálvulaRiegoGND: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
+  outputEstatus = digitalRead(dripValveVin1);
+  Serial.println("VálvulaRiegoVin: " + outputEstatus);
+  outputEstatus = digitalRead(dripValveGND1);
+  Serial.println("VálvulaRiegoGND: " + outputEstatus);
   dripValve = false;
   Serial.println("Pulso de cierre Activo");
   delay(50);
@@ -448,16 +470,10 @@ void closeValveError(){
   Serial.println("Cierre de válvula de riego de emergencia");
   digitalWrite(dripValveVin1, LOW);
   digitalWrite(dripValveGND1, HIGH);
-  exitEstatus = digitalRead(dripValveVin1);
-  estadoSalidas = digitalRead(dripValveVin1);
-  Serial.print("VálvulaRiegoVin: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
-  exitEstatus = digitalRead(dripValveGND1);
-  estadoSalidas = digitalRead(dripValveGND1);
-  Serial.print("VálvulaRiegoGND: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
+  outputEstatus = digitalRead(dripValveVin1);
+  Serial.print("VálvulaRiegoVin: " + outputEstatus);
+  outputEstatus = digitalRead(dripValveGND1);
+  Serial.print("VálvulaRiegoGND: " + outputEstatus);
   dripValve = false;
   startTimePulse = millis();
   activePulse = true;
@@ -477,16 +493,11 @@ void stopPulse(){
   digitalWrite(dripValveGND1, LOW);
   activePulse = false;
   Serial.println("Corta corriente salidas electroválvula");
-  exitEstatus = digitalRead(dripValveVin1);
-  estadoSalidas = digitalRead(dripValveVin1);
-  Serial.print("VálvulaRiegoVin: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
-  exitEstatus = digitalRead(dripValveGND1);
-  estadoSalidas = digitalRead(dripValveGND1);
-  Serial.print("VálvulaRiegoGND: ");
-  Serial.println(estadoSalidas + " ---- ");
-  Serial.println(exitEstatus);
+  outputEstatus = digitalRead(dripValveVin1);
+  Serial.print("VálvulaRiegoVin: " + outputEstatus);
+  Serial.println(outputEstatus);
+  outputEstatus = digitalRead(dripValveGND1);
+  Serial.print("VálvulaRiegoGND: " + outputEstatus);
   Serial.println("Pulso electroválvula no activo");
 }
 /* Flow meter */
@@ -520,32 +531,6 @@ void flowMeter(){
     } 
   }
 }
-/* Start WiFi */
-/* void InitWiFi() {
-  WiFi.begin(SSID, PASS);  // Inicializamos el WiFi con nuestras credenciales.
-  Serial.print("Conectando a ");
-  Serial.print(SSID);
-  Serial.println("...");
-  for(int i = 0; i < MAX_CONNECT; i++){
-    if(WiFi.status() == WL_CONNECTED){
-      break;
-    }
-    Serial.print(".");
-    delay(5000);
-    // Intentar reconectar solo si no está conectado
-    if (WiFi.status() != WL_CONNECTED) {
-      WiFi.reconnect();
-    }
-  }
-  // Verificar si la conexión fue exitosa
-  if(WiFi.status() == WL_CONNECTED){
-    Serial.println("\n\nConexión exitosa!!!");
-    Serial.print("Tu IP es: ");
-    Serial.println(WiFi.localIP());
-  }else{
-    Serial.println("\n\nError: No se pudo conectar a la red WiFi.");
-  }
-}*/
 /* New Start WiFi */
 void InitWiFi() {
   WiFi.begin(SSID, PASS);  // Inicializamos el WiFi con nuestras credenciales.
@@ -562,7 +547,7 @@ void InitWiFi() {
     // Verificar si han pasado 5 segundos
     if (millis() - initTime >= interval) {
       Serial.print(".");
-      Serial.print("Intento de conectar a la red WiFi: " + String(SSID));
+      Serial.print("Intento de conectar a la red WiFi: " + String(SSID) + " ");
       Serial.print(tries + 1);
       Serial.println(" de conexión...");
       // Verificar si el tiempo de espera total ha pasado para intentar reconectar
@@ -575,7 +560,6 @@ void InitWiFi() {
     }
     // Aquí puedes ejecutar otras tareas mientras esperas
   }
-
   // Verificar si la conexión fue exitosa
   if (estate == WL_CONNECTED) {
     Serial.println("\n\nConexión exitosa!!!");
@@ -589,9 +573,10 @@ void InitWiFi() {
 }
 /* Mail Start System */
 void mailStartSystem(){
-  String textMsg = " SmartDrip conectado a la red y en funcionamiento. \n"  // Nuevo diseño del mail para mejorar su visualización
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " SmartDrip" + idSmartDrip + "conectado a la red y en funcionamiento. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
-                   " Tiempo de riego: " + String(dripTime) + "min. \n"
+                   " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidityLimit) + "% \n"
                    " Horario de activación de riego: \n"
                    " Hora de inicio: " + String(startTime) + "\n"
@@ -613,9 +598,10 @@ void mailStartSystem(){
 }
 /* Mail Active Schedule */
 void mailActiveSchedule(){
-  String textMsg = " SmartDrip inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " SmartDrip" + idSmartDrip + "inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
-                   " Tiempo de riego: " + String(dripTime) + "min. \n"
+                   " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
                    " Horario de activación de riego: \n"
                    " Hora de inicio: " + String(startTime) + "\n"
@@ -638,10 +624,11 @@ void mailActiveSchedule(){
 }
 /* Mail Drip On*/
 void mailSmartDripOn(){
-  nowTime = rtc.getTime();  // probar si no es necesario actualizar hora y fecha para el envío del mail  
+  nowTime = rtc.getTime();  // *** probar si no es necesario actualizar hora y fecha para el envío del mail  
   date = rtc.getDate(); 
-  String textMsg = " Con fecha: " + date + "\n"
-                   " Riego conectado correctamente a las: " + nowTime;
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " Con fecha: " + date + "\n"
+                   " Riego conectado correctamente en Smart Drip" + idSmartDrip + "a las: " + nowTime;
   mailDripOn.text.content = textMsg.c_str();
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
@@ -661,7 +648,8 @@ void mailSmartDripOn(){
 }
 /* Mail Solenoid Valve Error */
 void mailErrorValve(){
-  String textMsg = "Error en la electrovávula de riego. \n"
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   "Error en la electrovávula de riego del Smart Drip" + idSmartDrip + "\n"
                    "Se detiene el proceso de riego automático. \n"
                    "Los sensores indican que el agua continúa fluyendo. \n"
                    "Por favor revise la instalación lo antes posible.";
@@ -684,7 +672,9 @@ void mailErrorValve(){
 } 
 /* Mail DHT Sensor Error */
 void mailErrorDHT11(){
-  String textMsg = " El sensor de datos ambientales está desconectado o dañado";
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " El sensor de datos ambientales del Smart Drip" + idSmartDrip + " está desconectado o dañado \n"
+                   " proceda a su inspección o llame al servicio técnico \n";
   mailErrorDHT.text.content = textMsg.c_str();
   mailErrorDHT.text.charSet = "us-ascii";
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
@@ -704,7 +694,9 @@ void mailErrorDHT11(){
 }
 /* Mail Hygro Error*/
 void mailErrorSensorHigro(){
-  String textMsg = " El sensor de humedad del sustrato está fuera de rango o dañado";
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " El sensor de humedad del sustrato del Smart Drip" + idSmartDrip + " está fuera de rango o dañado \n"
+                   " proceda a su inspección o llame al servicio técnico \n";
   mailErrorHigro.text.content = textMsg.c_str();
   mailErrorHigro.text.charSet = "us-ascii";
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
@@ -758,7 +750,8 @@ void weeklyMesage(){
   cleanData();
 }
 void mailWeekData(String mesage){
-  String textMsg = " Mensaje semanal de comprobación de humedades del sustrato \n" + String(mesage) + "\n";
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip" + idSmartDrip + " \n" + String(mesage) + "\n";
   mailErrorHigro.text.content = textMsg.c_str();
   mailErrorHigro.text.charSet = "us-ascii";
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
