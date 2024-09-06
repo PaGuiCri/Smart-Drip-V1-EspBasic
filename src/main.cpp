@@ -128,7 +128,7 @@ Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 /* Contadores de días y semanas */ 
-int dayCounter = 1;
+int dayCounter = 1;    // es necesario?
 /* Array con los nombres de los días de la semana */ 
 const char* diasSemana[] = {"Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"};
 /* Mensaje semanal */
@@ -302,6 +302,10 @@ void loop() {
   /* Comprobacion horario riego */
   if(withinSchedule){  //Horario de riego activo
     getHigroValues();
+    Serial.println("Active irrigation schedule");
+    if(mailActiveScheduleCheck){  
+    mailActiveSchedule();  //Envio mail horario de riego activo - desactivado
+    }
     if (currentMillis - previousMillis >= intervalDay) {
       previousMillis = currentMillis;
       // Lee los datos de los sensores si es necesario        
@@ -322,10 +326,6 @@ void loop() {
           dayWeek = 0;
           preferences.putInt("dayWeek", dayWeek);
       } */
-    }
-    Serial.println("Active irrigation schedule");
-    if(!mailActiveScheduleCheck){
-    mailActiveSchedule();  //Envio mail horario de riego activo - desactivado
     }
     if(substrateHumidity > dripHumidity){
       if(!checkTimer){
