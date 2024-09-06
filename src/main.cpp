@@ -43,6 +43,7 @@ void mailErrorValve();
 void mailErrorDHT11();
 void mailErrorSensorHigro();
 void mailActiveSchedule();
+void mailNoActiveSchedule();
 void mailWeekData(String mesage);
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
@@ -52,11 +53,13 @@ SMTP_Message mailErrorFlowSensor;
 SMTP_Message mailErrorDHT;
 SMTP_Message mailErrorHigro;
 SMTP_Message mailActivSchedule; 
+SMTP_Message mailNoActivSchedule;
 SMTP_Message mailWeeklyData;
 bool mailDripOnSended = false;
 bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
 bool mailActiveScheduleCheck = false;
+bool mailNoActiveScheduleCheck = false;
 
 /* Timers */
 volatile bool toggle = true;
@@ -238,15 +241,20 @@ void setup() {
   mailErrorDHT.subject = "Estado sensor medio ambiente";
   mailErrorDHT.addRecipient("Pablo", "falder24@gmail.com"); 
   /* Mail de horario de riego activo */
-  mailErrorDHT.sender.name = "Smart Drip System";
-  mailErrorDHT.sender.email = AUTHOR_EMAIL;
-  mailErrorDHT.subject = "Horario de riego activo";
-  mailErrorDHT.addRecipient("Pablo", "falder24@gmail.com"); 
+  mailActivSchedule.sender.name = "Smart Drip System";
+  mailActivSchedule.sender.email = AUTHOR_EMAIL;
+  mailActivSchedule.subject = "Horario de riego activo";
+  mailActivSchedule.addRecipient("Pablo", "falder24@gmail.com"); 
+  /* Mail de horario de riego NO activo */
+  mailNoActivSchedule.sender.name = "Smart Drip System";
+  mailNoActivSchedule.sender.email = AUTHOR_EMAIL;
+  mailNoActivSchedule.subject = "Horario de riego NO activo";
+  mailNoActivSchedule.addRecipient("Pablo", "falder24@gmail.com"); 
   /* Mail semanal de comprobación de humedades */
-  mailErrorDHT.sender.name = "Smart Drip System";
-  mailErrorDHT.sender.email = AUTHOR_EMAIL;
-  mailErrorDHT.subject = "Mail semanal de humedades";
-  mailErrorDHT.addRecipient("Pablo", "falder24@gmail.com"); 
+  mailWeeklyData.sender.name = "Smart Drip System";
+  mailWeeklyData.sender.email = AUTHOR_EMAIL;
+  mailWeeklyData.subject = "Mail semanal de humedades";
+  mailWeeklyData.addRecipient("Pablo", "falder24@gmail.com"); 
   stopPulse();
   getHigroValues();
   mailStartSystem();
@@ -302,8 +310,9 @@ void loop() {
   /* Comprobacion horario riego */
   if(withinSchedule){  //Horario de riego activo
     getHigroValues();
+    mailNoActiveScheduleCheck = true;
     Serial.println("Active irrigation schedule");
-    if(mailActiveScheduleCheck){  
+    if(!mailActiveScheduleCheck){  
     mailActiveSchedule();  //Envio mail horario de riego activo - desactivado
     }
     if (currentMillis - previousMillis >= intervalDay) {
@@ -365,6 +374,9 @@ void loop() {
     Serial.print(" Caudal de riego fuera de horario: ");  
     Serial.println(caudal);
     withinSchedule = false;
+    if(!mailNoActiveScheduleCheck){
+      mailNoActiveSchedule();
+    }
     mailActiveScheduleCheck = false;
     if(!dripValve && caudal != 0){
       if(closeValveCounter != 0){
@@ -621,6 +633,32 @@ void mailActiveSchedule(){
   ESP_MAIL_PRINTF("Liberar memoria: %d\n", MailClient.getFreeHeap());
   smtp.closeSession();
   mailActiveScheduleCheck = true;
+}
+/* Mail No ACtive Schedule */
+void mailNoActiveSchedule(){
+  String textMsg = idNumber + " \n" + idUser + " \n"
+                   " SmartDrip" + idSmartDrip + "Fin horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " Datos de configuración guardados: \n"
+                   " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
+                   " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
+                   " Horario de activación de riego: \n"
+                   " Hora de inicio: " + String(startTime) + "\n"
+                   " Hora de fin: " + String(endTime) + "\n"
+                   " Humedad sustrato: " + String(substrateHumidity) + "\n";
+  mailStartSDS.text.content = textMsg.c_str();
+  mailStartSDS.text.charSet = "us-ascii";
+  mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  if(!smtp.connect(&session))
+    return;
+  if(!MailClient.sendMail(&smtp, &mailStartSDS)){
+    Serial.println("Error envío Email, " + smtp.errorReason());
+  }else{
+    Serial.println("Correo enviado con exito");
+  }
+  ESP_MAIL_PRINTF("Liberar memoria: %d\n", MailClient.getFreeHeap());
+  smtp.closeSession();
+  mailNoActiveScheduleCheck = true;
 }
 /* Mail Drip On*/
 void mailSmartDripOn(){
