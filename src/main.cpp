@@ -280,13 +280,20 @@ void loop() {
     if(rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)){
       if(rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute)){
         withinSchedule = true;
+      }else{
+        withinSchedule = false;
       } 
+    }else{
+      withinSchedule = false;
     }
+        
   }else{
     // Caso especial: el rango cruza la medianoche
     if((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) ||
       (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))){
         withinSchedule = true;
+    }else{
+      withinSchedule = false;
     }
   }
   /* Activar motor de riego */
@@ -373,7 +380,6 @@ void loop() {
     Serial.println(" Fuera de horario de riego");
     Serial.print(" Caudal de riego fuera de horario: ");  
     Serial.println(caudal);
-    withinSchedule = false;
     if(!mailNoActiveScheduleCheck){
       mailNoActiveSchedule();
     }
