@@ -275,27 +275,23 @@ void loop() {
   startMinute = startMinuteStr.toInt();
   endHour = endHourStr.toInt();
   endMinute = endMinuteStr.toInt();  
-  if(startHour < endHour){
+  if (startHour < endHour) {
     // Caso normal: el rango no cruza la medianoche
-    if(rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)){
-      if(rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute)){
+    if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) &&
+        (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
         withinSchedule = true;
-      }else{
+    } else {
         withinSchedule = false;
-      } 
-    }else{
-      withinSchedule = false;
     }
-        
-  }else{
+} else {
     // Caso especial: el rango cruza la medianoche
-    if((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) ||
-      (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))){
+    if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) ||
+        (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
         withinSchedule = true;
-    }else{
-      withinSchedule = false;
+    } else {
+        withinSchedule = false;
     }
-  }
+}
   /* Activar motor de riego */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;
@@ -592,7 +588,7 @@ void InitWiFi() {
 /* Mail Start System */
 void mailStartSystem(){
   String textMsg = idNumber + " \n" + idUser + " \n"
-                   " SmartDrip" + idSmartDrip + "conectado a la red y en funcionamiento. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " SmartDrip" + idSmartDrip + " conectado a la red y en funcionamiento. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidityLimit) + "% \n"
@@ -617,7 +613,7 @@ void mailStartSystem(){
 /* Mail Active Schedule */
 void mailActiveSchedule(){
   String textMsg = idNumber + " \n" + idUser + " \n"
-                   " SmartDrip" + idSmartDrip + "inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " SmartDrip" + idSmartDrip + ": inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
@@ -643,7 +639,7 @@ void mailActiveSchedule(){
 /* Mail No ACtive Schedule */
 void mailNoActiveSchedule(){
   String textMsg = idNumber + " \n" + idUser + " \n"
-                   " SmartDrip" + idSmartDrip + "Fin horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " SmartDrip " + idSmartDrip + ": Fuera horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
@@ -672,7 +668,7 @@ void mailSmartDripOn(){
   date = rtc.getDate(); 
   String textMsg = idNumber + " \n" + idUser + " \n"
                    " Con fecha: " + date + "\n"
-                   " Riego conectado correctamente en Smart Drip" + idSmartDrip + "a las: " + nowTime;
+                   " Riego conectado correctamente en Smart Drip" + idSmartDrip + " a las: " + nowTime;
   mailDripOn.text.content = textMsg.c_str();
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
@@ -717,7 +713,7 @@ void mailErrorValve(){
 /* Mail DHT Sensor Error */
 void mailErrorDHT11(){
   String textMsg = idNumber + " \n" + idUser + " \n"
-                   " El sensor de datos ambientales del Smart Drip" + idSmartDrip + " está desconectado o dañado \n"
+                   " El sensor de datos ambientales del Smart Drip " + idSmartDrip + " está desconectado o dañado \n"
                    " proceda a su inspección o llame al servicio técnico \n";
   mailErrorDHT.text.content = textMsg.c_str();
   mailErrorDHT.text.charSet = "us-ascii";
