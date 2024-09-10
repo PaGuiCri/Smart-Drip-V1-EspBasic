@@ -4,15 +4,17 @@
 #include <Preferences.h>
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
+#include <HTTPClient.h>
 
 /* WiFi */
 //#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
 //#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
 #define SSID "MiFibra-21E0_EXT"
 #define PASS "2SSxDxcYNh"
-uint32_t idNumber = 0;
-String idSmartDrip = " Pablo Terraza ";
-String idUser = " PabloG ";
+uint32_t idNumber = 0;    // id Smart Drip crc32
+String idSDHex = "";      //id Smart Drip Hexadecimal
+String idSmartDrip = " Pablo Terraza ";   //id Smart Drip Usuario
+String idUser = " PabloG ";   //id usuario
 const int MAX_CONNECT = 10;
 bool wifiConnected = false;
 unsigned long lastConnectionTry = 0;
@@ -155,7 +157,7 @@ void setup() {
   Serial.begin(9600);
   /* Inicio preferences */
   preferences.begin("sensor_data", false);
-  idNumber = preferences.getInt("device_id", 0); // Obtener el id único del dispositivo almacenado
+  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
   if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
     String macAddress = WiFi.macAddress();  // Inicializa la dirección MAC como un ID único y convierte la dirección MAC a un array de bytes
     Serial.print("Dirección MAC: ");
@@ -164,16 +166,15 @@ void setup() {
     sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
            &macBytes[0], &macBytes[1], &macBytes[2], 
            &macBytes[3], &macBytes[4], &macBytes[5]);
-    uint32_t hash = crc32(macBytes, 6);
+    idNumber = crc32(macBytes, 6);
     // Muestra el hash en el monitor serial
     Serial.print("ID único (CRC32): ");
-    Serial.println(hash, HEX);
-    preferences.putInt("device_id", idNumber);
+    Serial.println(idNumber, HEX);
+    preferences.putUInt("device_id", idNumber);
   }
   Serial.print("ID único CRC32: ");
-  Serial.println(idNumber);
-  // Recupera el contador del día si el ESP32 se reinicia
-  //dayCounter = preferences.getInt("dayCounter", 1);
+  Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
+  idSDHex += String(idNumber, HEX);
   /* Inicio conexión WiFi */
   InitWiFi();
   /* Comprobar Hora RTC con NTP */
@@ -275,7 +276,7 @@ void loop() {
   startMinute = startMinuteStr.toInt();
   endHour = endHourStr.toInt();
   endMinute = endMinuteStr.toInt();  
-  if (startHour < endHour) {
+  if (startHour < endHour) {    // tercer cambio de comprobracion de horario activo
     // Caso normal: el rango no cruza la medianoche
     if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) &&
         (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
@@ -283,15 +284,20 @@ void loop() {
     } else {
         withinSchedule = false;
     }
-} else {
+  } else {
     // Caso especial: el rango cruza la medianoche
     if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) ||
         (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
-        withinSchedule = true;
+        // Verificar si estamos en el primer tramo del intervalo antes de la medianoche
+        if (rtc.getHour() >= startHour || rtc.getHour() < endHour) {
+            withinSchedule = true;
+        } else {
+            withinSchedule = false;
+        }
     } else {
         withinSchedule = false;
     }
-}
+  }
   /* Activar motor de riego */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;
@@ -587,7 +593,7 @@ void InitWiFi() {
 }
 /* Mail Start System */
 void mailStartSystem(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " SmartDrip" + idSmartDrip + " conectado a la red y en funcionamiento. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
@@ -612,7 +618,7 @@ void mailStartSystem(){
 }
 /* Mail Active Schedule */
 void mailActiveSchedule(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " SmartDrip" + idSmartDrip + ": inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
@@ -638,7 +644,7 @@ void mailActiveSchedule(){
 }
 /* Mail No ACtive Schedule */
 void mailNoActiveSchedule(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " SmartDrip " + idSmartDrip + ": Fuera horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
@@ -666,9 +672,12 @@ void mailNoActiveSchedule(){
 void mailSmartDripOn(){
   nowTime = rtc.getTime();  // *** probar si no es necesario actualizar hora y fecha para el envío del mail  
   date = rtc.getDate(); 
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " Con fecha: " + date + "\n"
-                   " Riego conectado correctamente en Smart Drip" + idSmartDrip + " a las: " + nowTime;
+                   " Riego conectado correctamente en Smart Drip" + idSmartDrip + " a las: " + nowTime + "\n"
+                   " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
+                   " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
+                   " Humedad sustrato: " + String(substrateHumidity) + "\n";
   mailDripOn.text.content = textMsg.c_str();
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
@@ -688,7 +697,7 @@ void mailSmartDripOn(){
 }
 /* Mail Solenoid Valve Error */
 void mailErrorValve(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    "Error en la electrovávula de riego del Smart Drip" + idSmartDrip + "\n"
                    "Se detiene el proceso de riego automático. \n"
                    "Los sensores indican que el agua continúa fluyendo. \n"
@@ -712,7 +721,7 @@ void mailErrorValve(){
 } 
 /* Mail DHT Sensor Error */
 void mailErrorDHT11(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " El sensor de datos ambientales del Smart Drip " + idSmartDrip + " está desconectado o dañado \n"
                    " proceda a su inspección o llame al servicio técnico \n";
   mailErrorDHT.text.content = textMsg.c_str();
@@ -734,7 +743,7 @@ void mailErrorDHT11(){
 }
 /* Mail Hygro Error*/
 void mailErrorSensorHigro(){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " El sensor de humedad del sustrato del Smart Drip" + idSmartDrip + " está fuera de rango o dañado \n"
                    " proceda a su inspección o llame al servicio técnico \n";
   mailErrorHigro.text.content = textMsg.c_str();
@@ -790,7 +799,7 @@ void weeklyMesage(){
   cleanData();
 }
 void mailWeekData(String mesage){
-  String textMsg = idNumber + " \n" + idUser + " \n"
+  String textMsg = idSDHex + " \n" + idUser + " \n"
                    " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip" + idSmartDrip + " \n" + String(mesage) + "\n";
   mailErrorHigro.text.content = textMsg.c_str();
   mailErrorHigro.text.charSet = "us-ascii";
