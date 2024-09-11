@@ -262,7 +262,7 @@ void setup() {
 }
 
 void loop() {
-  // Verificar si no está conectado al WiFi y si ha pasado una hora desde el último intento
+  /* Verificar si no está conectado al WiFi y si ha pasado una hora desde el último intento */
   if (!wifiConnected && (millis() - lastConnectionTry >= tryInterval)) {
     Serial.println("Intentando reconectar al WiFi cada hora...");
     InitWiFi();
@@ -276,28 +276,9 @@ void loop() {
   startMinute = startMinuteStr.toInt();
   endHour = endHourStr.toInt();
   endMinute = endMinuteStr.toInt();  
-  if (startHour < endHour) {    // tercer cambio de comprobracion de horario activo
-    // Caso normal: el rango no cruza la medianoche
-    if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) &&
-        (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
-        withinSchedule = true;
-    } else {
-        withinSchedule = false;
-    }
-  } else {
-    // Caso especial: el rango cruza la medianoche
-    if ((rtc.getHour() > startHour || (rtc.getHour() == startHour && rtc.getMinute() >= startMinute)) ||
-        (rtc.getHour() < endHour || (rtc.getHour() == endHour && rtc.getMinute() <= endMinute))) {
-        // Verificar si estamos en el primer tramo del intervalo antes de la medianoche
-        if (rtc.getHour() >= startHour || rtc.getHour() < endHour) {
-            withinSchedule = true;
-        } else {
-            withinSchedule = false;
-        }
-    } else {
-        withinSchedule = false;
-    }
-  }
+  /* Verificar si estamos dentro del horario especificado */
+  bool withinSchedule = isWithinSchedule(rtc.getHour(), rtc.getMinute());
+  
   /* Activar motor de riego */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;
@@ -419,6 +400,31 @@ void IRAM_ATTR onTimer1(){
     }
   }
 }
+/* Checking active schedule */
+bool isWithinSchedule(int currentHour, int currentMinute) {
+    if (startHour < endHour) {
+        return isWithinNormalSchedule(currentHour, currentMinute);
+    } else {
+        return isWithinCrossMidnightSchedule(currentHour, currentMinute);
+    }
+}
+
+bool isWithinNormalSchedule(int currentHour, int currentMinute) {
+    return (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) &&
+           (currentHour < endHour || (currentHour == endHour && currentMinute <= endMinute));
+}
+
+bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute) {
+    // Primer tramo: Desde startHour hasta las 23:59
+    if (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) {
+        return true;
+    }
+    // Segundo tramo: Desde las 00:00 hasta endHour
+    if (currentHour < endHour || (currentHour == endHour && currentMinute <= endMinute)) {
+        return true;
+    }
+    return false;
+}
 /* Getting Higro Measurements */
 void getHigroValues(){
   getHigroValue = analogRead(PinHigro);
@@ -449,7 +455,7 @@ void getDHTValues(){
     dhtOkCheck = dhtOk;
   }
 }
-/* Solenoid Valve Opening*/
+/* Solenoid Valve Opening */
 void openDripValve(){
   Serial.println("APERTURA DE VALVULA DE RIEGO");
   digitalWrite(dripValveVin1, HIGH);
@@ -668,7 +674,7 @@ void mailNoActiveSchedule(){
   smtp.closeSession();
   mailNoActiveScheduleCheck = true;
 }
-/* Mail Drip On*/
+/* Mail Drip On */
 void mailSmartDripOn(){
   nowTime = rtc.getTime();  // *** probar si no es necesario actualizar hora y fecha para el envío del mail  
   date = rtc.getDate(); 
