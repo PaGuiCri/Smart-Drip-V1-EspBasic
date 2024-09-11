@@ -20,6 +20,7 @@ bool wifiConnected = false;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
 void InitWiFi();
+void handleWiFiReconnection();
 /* Función para calcular CRC32 */
 uint32_t crc32(const uint8_t *data, size_t length) {
   uint32_t crc = 0xFFFFFFFF;
@@ -87,6 +88,7 @@ String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr;
 int startHour, startMinute, endHour, endMinute, dayWeek;
 bool withinSchedule = false;
+void extractTimeValues();
 
 /* Sincronización del RTC con NTP */
 const char* ntpServer = "pool.ntp.org";
@@ -96,6 +98,9 @@ const int daylightOffset_sec = 3600;
 /* Configuración de terminales para higrómetro y DHT11  */
 void getDHTValues();
 void getHigroValues();
+void handleDrip();
+void handleOutOfScheduleDrip();
+void finalizeDrip();
 #define PinHigro 34  // Nueva configuración de pines antes 34. volvemos al pin 34 desde el 13
 #define PinDHT 4     // El pin del sensor DHT tiene q ser el 4 si se trabaja con la biblioteca SimpleDHT
 float temp = 0, humidity = 0;
@@ -121,13 +126,15 @@ float totalLitros = 0.0;
 unsigned long oldTime = 0;
 bool flowMeterEstatus = false;
 bool estadoSensorFlujo = false;
-
 /* Interrupción llamada cada vez que se detecta un pulso del sensor */
 void flowMeter();
 void pulseCounter(){
   pulses++;
 }
-
+/* Checking Active Schedule */
+bool isWithinSchedule(int currentHour, int currentMinute);
+bool isWithinNormalSchedule(int currentHour, int currentMinute);
+bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute);
 /* Instancia para almacenar datos de riego en memoria flash */
 Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
@@ -260,134 +267,41 @@ void setup() {
   getHigroValues();
   mailStartSystem();
 }
-
 void loop() {
   /* Verificar si no está conectado al WiFi y si ha pasado una hora desde el último intento */
-  if (!wifiConnected && (millis() - lastConnectionTry >= tryInterval)) {
-    Serial.println("Intentando reconectar al WiFi cada hora...");
-    InitWiFi();
-    lastConnectionTry = millis();  // Actualizar el tiempo del último intento
-  }
-  startHourStr = startTime.substring(0, 2);
-  startMinuteStr = startTime.substring(3, 5);
-  endHourStr = endTime.substring(0, 2);
-  endMinuteStr = endTime.substring(3, 5);
-  startHour = startHourStr.toInt();
-  startMinute = startMinuteStr.toInt();
-  endHour = endHourStr.toInt();
-  endMinute = endMinuteStr.toInt();  
-  /* Verificar si estamos dentro del horario especificado */
+  handleWiFiReconnection();
+  /* Extraer valores de tiempo actual */
+  extractTimeValues();
+  /* Comprobación de horario */
   bool withinSchedule = isWithinSchedule(rtc.getHour(), rtc.getMinute());
-  
-  /* Activar motor de riego */
+  /* Comprobar si el temporizador de riego está habilitado */
   checkTimer = timerAlarmEnabled(timer1);
-  dripActived = checkTimer;
+  dripActived = checkTimer;  // Actualizar el estado de la activación del riego
   Serial.print("Timer ON: ");
   Serial.println(checkTimer);
-  if(!checkTimer){
+  if (!checkTimer) {    // Si el temporizador no está habilitado, reiniciar los valores predeterminados de riego
     dripTime = dripTimeLimit;
     dripTimeCheck = dripTimeLimit;
     dripHumidity = dripHumidityLimit;
     Serial.println("Timer disabled");
-  }else{
+  } else {       // Si el temporizador está habilitado, indicar que el proceso de riego está en curso
     Serial.println("Timer enabled");
     Serial.println("Irrigation process underway");
   }
+    // Mostrar los valores actuales de tiempo y humedad de riego
   Serial.print("Irrigation time: ");
   Serial.println(dripTime);
-  Serial.print("Irrrigation humidity: ");
+  Serial.print("Irrigation humidity: ");
   Serial.println(dripHumidity);
-  /* Comprobacion horario riego */
-  if(withinSchedule){  //Horario de riego activo
-    getHigroValues();
-    mailNoActiveScheduleCheck = true;
-    Serial.println("Active irrigation schedule");
-    if(!mailActiveScheduleCheck){  
-    mailActiveSchedule();  //Envio mail horario de riego activo - desactivado
-    }
-    if (currentMillis - previousMillis >= intervalDay) {
-      previousMillis = currentMillis;
-      // Lee los datos de los sensores si es necesario        
-      // Guarda los datos en la memoria no volátil
-      preferences.putInt(("Humedad_day" + String(dayWeek)).c_str(), substrateHumidity);
-      preferences.putBool(("Riego_day" + String(dayWeek)).c_str(), dripActived);
-      preferences.putInt("dayWeek", dayWeek);
-      dripActived = false;
-      // Si es el último día de la semana, envía el correo y reinicia el contador
-      if (dayWeek > 6) {    // *** Cambio 7 por 6 pendiente de revisar según el dato de dayWeek
-          weeklyMesage();
-          dayWeek = 0;
-          preferences.putInt("dayWeek", dayWeek);
-      }
-      /* Posible elegir que dia se quiere enviar el correo
-      if(dayWeek == 6){
-        weeklyMesage();
-          dayWeek = 0;
-          preferences.putInt("dayWeek", dayWeek);
-      } */
-    }
-    if(substrateHumidity > dripHumidity){
-      if(!checkTimer){
-      Serial.println("Wet substrate, no need to water");
-      }
-    }else{
-      Serial.println("Dry substrate, needs watering");
-      timerAlarmEnable(timer1);
-      if(!dripValve){
-        openDripValve();
-        flowMeter();
-        Serial.println("Irrigation process underway");  
-      }else{
-        flowMeter();
-        Serial.print("Caudal: ");
-        Serial.print(caudal);
-        Serial.print(" L/min - Volumen acumulado: ");
-        Serial.print(totalLitros);
-        Serial.println(" L.");
-        if(!mailDripOnSended){  
-          mailSmartDripOn();
-        }
-      }   
-      dripValve = true; // *** revisar si conviene activar esta variable aqui o dentro del metodo de apertura
-      Serial.print("Salida ValvulaRiego: ");
-      Serial.println(dripValve);
-      Serial.print("Estado sensor flujo: ");
-      Serial.println(flowMeterEstatus);    
-      Serial.print("Contador conectado: ");
-      Serial.println(counter);
-      Serial.print("Tiempo de riego: ");
-      Serial.println(dripTime + " min.");
-      delay(500);
-    }
-  }else{ // Horario de riego no activo
-    Serial.println(" Fuera de horario de riego");
-    Serial.print(" Caudal de riego fuera de horario: ");  
-    Serial.println(caudal);
-    if(!mailNoActiveScheduleCheck){
-      mailNoActiveSchedule();
-    }
-    mailActiveScheduleCheck = false;
-    if(!dripValve && caudal != 0){
-      if(closeValveCounter != 0){
-        closeValveError();
-      }
-      if(flowMeterEstatus && !mailErrorValveSended && closeValveCounter == 0){
-        mailErrorValve();
-        Serial.println("Email de Error en válvula enviado");
-        //AUTO = false;
-        closeValveCounter = 10;
-      }
-    }
+  if (withinSchedule) {   // Si estamos dentro del horario de riego
+    /* Manejar el proceso de riego cuando estamos dentro del horario programado */
+    handleDrip();    
+  } else {
+    /* Manejar situaciones de riego fuera del horario programado */
+    handleOutOfScheduleDrip();
   }
-  if(dripTime <= 0){
-    Serial.println("Tiempo de Riego terminado");
-    timerAlarmDisable(timer1);
-    if (dripValve == true){
-      closeDripValve();
-      dripValve = false;
-      mailDripOnSended = false;
-    }
-  }
+  /* Finalizar el proceso de riego si el tiempo de riego ha terminado */
+  finalizeDrip();
 }
 /* Timer 1min */
 void IRAM_ATTR onTimer1(){
@@ -400,6 +314,17 @@ void IRAM_ATTR onTimer1(){
     }
   }
 }
+/* Get Time */
+void extractTimeValues() {
+  startHourStr = startTime.substring(0, 2);
+  startMinuteStr = startTime.substring(3, 5);
+  endHourStr = endTime.substring(0, 2);
+  endMinuteStr = endTime.substring(3, 5);
+  startHour = startHourStr.toInt();
+  startMinute = startMinuteStr.toInt();
+  endHour = endHourStr.toInt();
+  endMinute = endMinuteStr.toInt();
+}
 /* Checking active schedule */
 bool isWithinSchedule(int currentHour, int currentMinute) {
     if (startHour < endHour) {
@@ -408,12 +333,10 @@ bool isWithinSchedule(int currentHour, int currentMinute) {
         return isWithinCrossMidnightSchedule(currentHour, currentMinute);
     }
 }
-
 bool isWithinNormalSchedule(int currentHour, int currentMinute) {
     return (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) &&
            (currentHour < endHour || (currentHour == endHour && currentMinute <= endMinute));
 }
-
 bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute) {
     // Primer tramo: Desde startHour hasta las 23:59
     if (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) {
@@ -424,6 +347,101 @@ bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute) {
         return true;
     }
     return false;
+}
+/* Handle Irrigation */
+void handleDrip() {
+  getHigroValues();
+  mailNoActiveScheduleCheck = true;
+  Serial.println("Active irrigation schedule");
+  
+  if (!mailActiveScheduleCheck) {  
+    mailActiveSchedule();  // Envío mail horario de riego activo - desactivado
+  }
+  
+  if (currentMillis - previousMillis >= intervalDay) {
+    previousMillis = currentMillis;
+    // Lee los datos de los sensores si es necesario        
+    // Guarda los datos en la memoria no volátil
+    preferences.putInt(("Humedad_day" + String(dayWeek)).c_str(), substrateHumidity);
+    preferences.putBool(("Riego_day" + String(dayWeek)).c_str(), dripActived);
+    preferences.putInt("dayWeek", dayWeek);
+    dripActived = false;
+
+    if (dayWeek > 6) {  // *** Cambio 7 por 6 pendiente de revisar según el dato de dayWeek
+      weeklyMesage();
+      dayWeek = 0;
+      preferences.putInt("dayWeek", dayWeek);
+    }
+  }
+
+  if (substrateHumidity > dripHumidity) {
+    if (!checkTimer) {
+      Serial.println("Wet substrate, no need to water");
+    }
+  } else {
+    Serial.println("Dry substrate, needs watering");
+    timerAlarmEnable(timer1);
+    if (!dripValve) {
+      openDripValve();
+      flowMeter();
+      Serial.println("Irrigation process underway");  
+    } else {
+      flowMeter();
+      Serial.print("Caudal: ");
+      Serial.print(caudal);
+      Serial.print(" L/min - Volumen acumulado: ");
+      Serial.print(totalLitros);
+      Serial.println(" L.");
+      if (!mailDripOnSended) {  
+        mailSmartDripOn();
+      }
+    }
+    dripValve = true; // *** revisar si conviene activar esta variable aquí o dentro del método de apertura
+    Serial.print("Salida ValvulaRiego: ");
+    Serial.println(dripValve);
+    Serial.print("Estado sensor flujo: ");
+    Serial.println(flowMeterEstatus);    
+    Serial.print("Contador conectado: ");
+    Serial.println(counter);
+    Serial.print("Tiempo de riego: ");
+    Serial.println(dripTime + " min.");
+    delay(500);
+  }
+}
+/* Handle Out of Schedule Irrigation */
+void handleOutOfScheduleDrip() {
+  Serial.println("Fuera de horario de riego");
+  Serial.print("Caudal de riego fuera de horario: ");  
+  Serial.println(caudal);
+
+  if (!mailNoActiveScheduleCheck) {
+    mailNoActiveSchedule();
+  }
+  
+  mailActiveScheduleCheck = false;
+  
+  if (!dripValve && caudal != 0) {
+    if (closeValveCounter != 0) {
+      closeValveError();
+    }
+    if (flowMeterEstatus && !mailErrorValveSended && closeValveCounter == 0) {
+      mailErrorValve();
+      Serial.println("Email de Error en válvula enviado");
+      closeValveCounter = 10;
+    }
+  }
+}
+/* Finalize Irrigation */
+void finalizeDrip() {
+  if (dripTime <= 0) {
+    Serial.println("Tiempo de Riego terminado");
+    timerAlarmDisable(timer1);
+    if (dripValve == true) {
+      closeDripValve();
+      dripValve = false;
+      mailDripOnSended = false;
+    }
+  }
 }
 /* Getting Higro Measurements */
 void getHigroValues(){
@@ -597,6 +615,14 @@ void InitWiFi() {
     wifiConnected = false;
   }
 }
+/* Check WiFi Reconnection */
+void handleWiFiReconnection() {
+  if (!wifiConnected && (millis() - lastConnectionTry >= tryInterval)) {
+    Serial.println("Intentando reconectar al WiFi cada hora...");
+    InitWiFi();
+    lastConnectionTry = millis();  // Actualizar el tiempo del último intento
+  }
+}
 /* Mail Start System */
 void mailStartSystem(){
   String textMsg = idSDHex + " \n" + idUser + " \n"
@@ -747,7 +773,7 @@ void mailErrorDHT11(){
   mailErrorDHTSended = true;
   smtp.closeSession();
 }
-/* Mail Hygro Error*/
+/* Mail Hygro Error */
 void mailErrorSensorHigro(){
   String textMsg = idSDHex + " \n" + idUser + " \n"
                    " El sensor de humedad del sustrato del Smart Drip" + idSmartDrip + " está fuera de rango o dañado \n"
@@ -766,10 +792,9 @@ void mailErrorSensorHigro(){
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   smtp.closeSession();
 }
-
+/* Check Mail Callback */
 void smtpCallback(SMTP_Status status){
   Serial.println(status.info());
-
   if(status.success()){
     Serial.println("......................");
     ESP_MAIL_PRINTF("Message sent success: %d\n", status.completedCount());
@@ -790,9 +815,9 @@ void smtpCallback(SMTP_Status status){
     Serial.println(".....................\n");
   }
 }
+/* Data Weekly Mesage */
 void weeklyMesage(){
   String mesage = "";
-
   for(int i = 1; i <= 7; i++){
     int sensor1Data = preferences.getInt(("Humedad_day" + String(i)).c_str(), 0);
     bool drip = preferences.getBool(("Riego_day" + String(i)).c_str(), false);
@@ -804,6 +829,7 @@ void weeklyMesage(){
   // Limpia los datos después de enviar el correo
   cleanData();
 }
+/* Mail Data Weekly */
 void mailWeekData(String mesage){
   String textMsg = idSDHex + " \n" + idUser + " \n"
                    " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip" + idSmartDrip + " \n" + String(mesage) + "\n";
@@ -821,6 +847,7 @@ void mailWeekData(String mesage){
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   smtp.closeSession();
 }
+/* Clean Data Preferences */
 void cleanData(){
   for(int i = 1; i <= 7; i++){
      preferences.remove(("Humedad_day" + String(i)).c_str());
