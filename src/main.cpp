@@ -87,6 +87,7 @@ String startTime = "08:00";
 String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr;
 int startHour, startMinute, endHour, endMinute, dayWeek;
+int currentHour, currentMinute;
 bool withinSchedule = false;
 void extractTimeValues();
 
@@ -231,7 +232,7 @@ void setup() {
   /* Mail de Estado de riego de Smart Drip System */
   mailDripOn.sender.name = "Smart Drip System";
   mailDripOn.sender.email = AUTHOR_EMAIL;
-  mailDripOn.subject = "Estado Riego MiTerrazaIoT";
+  mailDripOn.subject = "Estado Riego Smart Drip";
   mailDripOn.addRecipient("Pablo", "falder24@gmail.com");
   /* Mail de error en electrválvula de riego */
   mailErrValve.sender.name = "Smart Drip System";
@@ -273,7 +274,14 @@ void loop() {
   /* Extraer valores de tiempo actual */
   extractTimeValues();
   /* Comprobación de horario */
-  bool withinSchedule = isWithinSchedule(rtc.getHour(), rtc.getMinute());
+  currentHour = rtc.getHour(true); // Obetenemos la hora actual. True para formato 24h  
+  currentMinute = rtc.getMinute();
+  Serial.print("Hora actual: ");
+  Serial.print(currentHour);
+  Serial.print(":");
+  Serial.print(currentMinute);
+  Serial.println();
+  bool withinSchedule = isWithinSchedule(currentHour, currentMinute);   // True para formato de 24h
   /* Comprobar si el temporizador de riego está habilitado */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;  // Actualizar el estado de la activación del riego
@@ -327,37 +335,25 @@ void extractTimeValues() {
 }
 /* Checking active schedule */
 bool isWithinSchedule(int currentHour, int currentMinute) {
-    if (startHour < endHour) {
-        return isWithinNormalSchedule(currentHour, currentMinute);
+    int currentTotalMinutes = (currentHour * 60) + currentMinute;
+    int startTotalMinutes = (startHour * 60) + startMinute;
+    int endTotalMinutes = (endHour * 60) + endMinute;
+    if (startTotalMinutes < endTotalMinutes) {
+        // Caso normal: el rango no cruza la medianoche
+        return (currentTotalMinutes >= startTotalMinutes && currentTotalMinutes <= endTotalMinutes);
     } else {
-        return isWithinCrossMidnightSchedule(currentHour, currentMinute);
+        // Caso especial: el rango cruza la medianoche
+        return (currentTotalMinutes >= startTotalMinutes || currentTotalMinutes <= endTotalMinutes);
     }
-}
-bool isWithinNormalSchedule(int currentHour, int currentMinute) {
-    return (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) &&
-           (currentHour < endHour || (currentHour == endHour && currentMinute <= endMinute));
-}
-bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute) {
-    // Primer tramo: Desde startHour hasta las 23:59
-    if (currentHour > startHour || (currentHour == startHour && currentMinute >= startMinute)) {
-        return true;
-    }
-    // Segundo tramo: Desde las 00:00 hasta endHour
-    if (currentHour < endHour || (currentHour == endHour && currentMinute <= endMinute)) {
-        return true;
-    }
-    return false;
 }
 /* Handle Irrigation */
 void handleDrip() {
   getHigroValues();
-  mailNoActiveScheduleCheck = true;
+  mailNoActiveScheduleCheck = false;
   Serial.println("Active irrigation schedule");
-  
   if (!mailActiveScheduleCheck) {  
     mailActiveSchedule();  // Envío mail horario de riego activo - desactivado
   }
-  
   if (currentMillis - previousMillis >= intervalDay) {
     previousMillis = currentMillis;
     // Lee los datos de los sensores si es necesario        
@@ -366,14 +362,12 @@ void handleDrip() {
     preferences.putBool(("Riego_day" + String(dayWeek)).c_str(), dripActived);
     preferences.putInt("dayWeek", dayWeek);
     dripActived = false;
-
     if (dayWeek > 6) {  // *** Cambio 7 por 6 pendiente de revisar según el dato de dayWeek
       weeklyMesage();
       dayWeek = 0;
       preferences.putInt("dayWeek", dayWeek);
     }
   }
-
   if (substrateHumidity > dripHumidity) {
     if (!checkTimer) {
       Serial.println("Wet substrate, no need to water");
@@ -413,13 +407,10 @@ void handleOutOfScheduleDrip() {
   Serial.println("Fuera de horario de riego");
   Serial.print("Caudal de riego fuera de horario: ");  
   Serial.println(caudal);
-
+  mailActiveScheduleCheck = false;
   if (!mailNoActiveScheduleCheck) {
     mailNoActiveSchedule();
   }
-  
-  mailActiveScheduleCheck = false;
-  
   if (!dripValve && caudal != 0) {
     if (closeValveCounter != 0) {
       closeValveError();
