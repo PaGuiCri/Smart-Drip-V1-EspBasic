@@ -16,9 +16,9 @@ String idSDHex = "";      //id Smart Drip Hexadecimal
 String idSmartDrip = " Pablo Terraza ";   //id Smart Drip Usuario
 String idUser = " PabloG ";   //id usuario
 const int MAX_CONNECT = 10;
-bool wifiConnected = false;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
+wl_status_t state;
 void InitWiFi();
 void handleWiFiReconnection();
 /* Función para calcular CRC32 */
@@ -79,6 +79,7 @@ void closeValveError();
 ESP32Time rtc;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
+void NTPsincro();
 
 /* Variables to save date and time */
 String nowTime = "";
@@ -90,7 +91,7 @@ int startHour, startMinute, endHour, endMinute, dayWeek;
 int currentHour, currentMinute;
 bool withinSchedule = false;
 void extractTimeValues();
-
+void createID();
 /* Sincronización del RTC con NTP */
 const char* ntpServer = "pool.ntp.org";
 const long gmtOFFset_sec = 3600;
@@ -134,8 +135,6 @@ void pulseCounter(){
 }
 /* Checking Active Schedule */
 bool isWithinSchedule(int currentHour, int currentMinute);
-bool isWithinNormalSchedule(int currentHour, int currentMinute);
-bool isWithinCrossMidnightSchedule(int currentHour, int currentMinute);
 /* Instancia para almacenar datos de riego en memoria flash */
 Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
@@ -166,37 +165,13 @@ void setup() {
   /* Inicio preferences */
   preferences.begin("sensor_data", false);
   idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
-  if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
-    String macAddress = WiFi.macAddress();  // Inicializa la dirección MAC como un ID único y convierte la dirección MAC a un array de bytes
-    Serial.print("Dirección MAC: ");
-    Serial.println(macAddress);
-    uint8_t macBytes[6];
-    sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-           &macBytes[0], &macBytes[1], &macBytes[2], 
-           &macBytes[3], &macBytes[4], &macBytes[5]);
-    idNumber = crc32(macBytes, 6);
-    // Muestra el hash en el monitor serial
-    Serial.print("ID único (CRC32): ");
-    Serial.println(idNumber, HEX);
-    preferences.putUInt("device_id", idNumber);
-  }
+  /* Creación de ID único */
+  createID();
   Serial.print("ID único CRC32: ");
   Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
   idSDHex += String(idNumber, HEX);
   /* Inicio conexión WiFi */
   InitWiFi();
-  /* Comprobar Hora RTC con NTP */
-  configTime(gmtOFFset_sec, daylightOffset_sec, ntpServer);
-  struct tm timeinfo;
-  if(getLocalTime(&timeinfo)){
-    rtc.setTimeStruct(timeinfo);
-  }
-  nowTime = rtc.getTime();
-  date = rtc.getDate();
-  dayWeek = rtc.getDayofWeek() == 0 ? 7 : rtc.getDayofWeek();
-  if(!rtc.getDayofWeek()){
-    preferences.getInt("dayWeek", dayWeek);
-  }
   Serial.print("Time: ");
   Serial.println(nowTime);
   Serial.print("Date: ");
@@ -269,12 +244,12 @@ void setup() {
   mailStartSystem();
 }
 void loop() {
-  /* Verificar si no está conectado al WiFi y si ha pasado una hora desde el último intento */
+  /* Verificar cada hora la conexión WiFi y reconecta si se ha perdido */
   handleWiFiReconnection();
   /* Extraer valores de tiempo actual */
   extractTimeValues();
   /* Comprobación de horario */
-  currentHour = rtc.getHour(true); // Obetenemos la hora actual. True para formato 24h  
+  currentHour = rtc.getHour(true); // Obtenemos la hora actual. True para formato 24h  
   currentMinute = rtc.getMinute();
   Serial.print("Hora actual: ");
   Serial.print(currentHour);
@@ -362,9 +337,9 @@ void handleDrip() {
     preferences.putBool(("Riego_day" + String(dayWeek)).c_str(), dripActived);
     preferences.putInt("dayWeek", dayWeek);
     dripActived = false;
-    if (dayWeek > 6) {  // *** Cambio 7 por 6 pendiente de revisar según el dato de dayWeek
+    if (dayWeek >= 7) {  // Cuando es domingo se crea y se envía el mensaje semanal con la información sobre el estado de Smart Drip
       weeklyMesage();
-      dayWeek = 0;
+      dayWeek = 1;
       preferences.putInt("dayWeek", dayWeek);
     }
   }
@@ -566,6 +541,23 @@ void flowMeter(){
     } 
   }
 }
+/* Create and Encrypt ID */
+void createID(){
+if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
+    String macAddress = WiFi.macAddress();  // Inicializa la dirección MAC como un ID único y convierte la dirección MAC a un array de bytes
+    Serial.print("Dirección MAC: ");
+    Serial.println(macAddress);
+    uint8_t macBytes[6];
+    sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
+           &macBytes[0], &macBytes[1], &macBytes[2], 
+           &macBytes[3], &macBytes[4], &macBytes[5]);
+    idNumber = crc32(macBytes, 6);
+    // Muestra el hash en el monitor serial
+    Serial.print("ID único (CRC32): ");
+    Serial.println(idNumber, HEX);
+    preferences.putUInt("device_id", idNumber);
+  }
+}
 /* New Start WiFi */
 void InitWiFi() {
   WiFi.begin(SSID, PASS);  // Inicializamos el WiFi con nuestras credenciales.
@@ -573,12 +565,12 @@ void InitWiFi() {
   Serial.print(SSID);
   Serial.println("...");
   int tries = 0;
-  wl_status_t estate = WiFi.status();
+  state = WiFi.status();
   unsigned long initTime = millis();
   const unsigned long interval = 5000;  // 5 segundos
   const unsigned long waitTime = 15000;  // 15 segundos para dar tiempo al WiFi
   // Continuar mientras no esté conectado y no se hayan agotado los intentos
-  while (estate != WL_CONNECTED && tries < MAX_CONNECT) {
+  while (state != WL_CONNECTED && tries < MAX_CONNECT) {
     // Verificar si han pasado 5 segundos
     if (millis() - initTime >= interval) {
       Serial.print(".");
@@ -590,28 +582,51 @@ void InitWiFi() {
         WiFi.reconnect();
         initTime = millis(); // Reiniciar el temporizador solo después de reconectar
       }
-      estate = WiFi.status();
+      state = WiFi.status();
       tries++;
     }
     // Aquí puedes ejecutar otras tareas mientras esperas
   }
   // Verificar si la conexión fue exitosa
-  if (estate == WL_CONNECTED) {
+  if (state == WL_CONNECTED) {
     Serial.println("\n\nConexión exitosa!!!");
     Serial.print("Tu IP es: ");
     Serial.println(WiFi.localIP());
-    wifiConnected = true;
+    NTPsincro();
   } else {
     Serial.println("\n\nError: No se pudo conectar a la red WiFi.");
-    wifiConnected = false;
   }
 }
 /* Check WiFi Reconnection */
 void handleWiFiReconnection() {
-  if (!wifiConnected && (millis() - lastConnectionTry >= tryInterval)) {
-    Serial.println("Intentando reconectar al WiFi cada hora...");
-    InitWiFi();
-    lastConnectionTry = millis();  // Actualizar el tiempo del último intento
+  if (millis() - lastConnectionTry >= tryInterval) {  // Comprobación de la conexión de la red WiFi cada hora
+    lastConnectionTry = millis();   // Actualizar el tiempo del último chequeo
+    if(WiFi.status() != WL_CONNECTED){
+      Serial.println("Conexión WiFi perdida. Intentando reconectar...");
+      InitWiFi();
+    }
+    Serial.println("Conexión WiFi estable. ");
+  }
+}
+/* NTP Sincronization with RTC */
+void NTPsincro(){
+  configTime(gmtOFFset_sec, daylightOffset_sec, ntpServer);
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {  // Obtener la hora local
+    Serial.println("Error al obtener la hora");
+    return;
+  }
+  Serial.println("Hora sincronizada con NTP:");
+  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");  // Mostrar la fecha y hora formateada
+  // Sincronizar el RTC del ESP32 con la hora local
+  rtc.setTimeStruct(timeinfo);  // Establecer el RTC con la estructura de tiempo obtenida
+  Serial.print("Hora configurada en RTC: ");
+  Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
+  nowTime = rtc.getTime();
+  date = rtc.getDate();
+  dayWeek = rtc.getDayofWeek() == 0 ? 7 : rtc.getDayofWeek();
+  if(dayWeek == 7){
+    dayWeek = preferences.getInt("dayWeek", dayWeek);
   }
 }
 /* Mail Start System */
@@ -693,7 +708,7 @@ void mailNoActiveSchedule(){
 }
 /* Mail Drip On */
 void mailSmartDripOn(){
-  nowTime = rtc.getTime();  // *** probar si no es necesario actualizar hora y fecha para el envío del mail  
+  nowTime = rtc.getTime();  //Probar si no es necesario actualizar hora y fecha para el envío del mail  
   date = rtc.getDate(); 
   String textMsg = idSDHex + " \n" + idUser + " \n"
                    " Con fecha: " + date + "\n"
