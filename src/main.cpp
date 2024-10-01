@@ -127,7 +127,7 @@ float waterVolume = 0.0; // *** redefinir variables de caudal de agua
 float totalLitros = 0.0;
 unsigned long oldTime = 0;
 bool flowMeterEstatus = false;
-bool estadoSensorFlujo = false;
+bool flowSensorEnabled = false;  // Habilita o deshabilita el sensor de flujo de caudal
 /* Interrupción llamada cada vez que se detecta un pulso del sensor */
 void flowMeter();
 void pulseCounter(){
@@ -352,15 +352,19 @@ void handleDrip() {
     timerAlarmEnable(timer1);
     if (!dripValve) {
       openDripValve();
-      flowMeter();
+      if(flowSensorEnabled){
+      flowMeter();   // Solo se llama si el sensor de flujo está habilitado
+      }
       Serial.println("Irrigation process underway");  
     } else {
-      flowMeter();
+      if(flowSensorEnabled){
+      flowMeter();   // Solo se llama si el sensor de flujo está habilitado
       Serial.print("Caudal: ");
       Serial.print(caudal);
       Serial.print(" L/min - Volumen acumulado: ");
       Serial.print(totalLitros);
       Serial.println(" L.");
+      }
       if (!mailDripOnSended) {  
         mailSmartDripOn();
       }
@@ -368,8 +372,10 @@ void handleDrip() {
     dripValve = true; // *** revisar si conviene activar esta variable aquí o dentro del método de apertura
     Serial.print("Salida ValvulaRiego: ");
     Serial.println(dripValve);
+    if(flowSensorEnabled){
     Serial.print("Estado sensor flujo: ");
     Serial.println(flowMeterEstatus);    
+    }
     Serial.print("Contador conectado: ");
     Serial.println(counter);
     Serial.print("Tiempo de riego: ");
@@ -390,7 +396,7 @@ void handleOutOfScheduleDrip() {
     if (closeValveCounter != 0) {
       closeValveError();
     }
-    if (flowMeterEstatus && !mailErrorValveSended && closeValveCounter == 0) {
+    if (flowSensorEnabled && flowMeterEstatus && !mailErrorValveSended && closeValveCounter == 0) {
       mailErrorValve();
       Serial.println("Email de Error en válvula enviado");
       closeValveCounter = 10;
