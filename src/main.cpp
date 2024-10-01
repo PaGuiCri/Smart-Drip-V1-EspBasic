@@ -843,8 +843,11 @@ void weeklyMesage(){
 }
 /* Mail Data Weekly */
 void mailWeekData(String mesage){
+  date = rtc.getDate();
   String textMsg = idSDHex + " \n" + idUser + " \n"
-                   " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip" + idSmartDrip + " \n" + String(mesage) + "\n";
+                   " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip " + idSmartDrip + " \n" 
+                   + " con fecha " + String(date) + " los datos son: " + " \n"
+                   + String(mesage) + "\n";
   mailErrorHigro.text.content = textMsg.c_str();
   mailErrorHigro.text.charSet = "us-ascii";
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
