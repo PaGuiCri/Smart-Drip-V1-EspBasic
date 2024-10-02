@@ -662,8 +662,12 @@ void mailStartSystem(){
 }
 /* Mail Active Schedule */
 void mailActiveSchedule(){
+  nowTime = rtc.getTime();
+  date = rtc.getDate();
   String textMsg = idSDHex + " \n" + idUser + " \n"
-                   " SmartDrip" + idSmartDrip + ": inicia horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " SmartDrip" + idSmartDrip + ": inicia horario activo de riego. \n"
+                   " RTC: con fecha: " + String(date) + "\n"
+                   "      hora: " + String(nowTime) + "\n" // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
@@ -688,8 +692,12 @@ void mailActiveSchedule(){
 }
 /* Mail No ACtive Schedule */
 void mailNoActiveSchedule(){
+  nowTime = rtc.getTime();
+  date = rtc.getDate();
   String textMsg = idSDHex + " \n" + idUser + " \n"
-                   " SmartDrip " + idSmartDrip + ": Fuera horario activo de riego. \n"  // Nuevo diseño del mail para mejorar su visualización
+                   " SmartDrip " + idSmartDrip + ": Fuera horario activo de riego. \n" 
+                   " RTC: con fecha: " + String(date) + "\n"
+                   "      hora: " + String(nowTime) + "\n" // Nuevo diseño del mail para mejorar su visualización
                    " Datos de configuración guardados: \n"
                    " Tiempo de riego: " + String(dripTimeLimit) + "min. \n"
                    " Limite de humedad de riego: " + String(dripHumidity) + "% \n"
