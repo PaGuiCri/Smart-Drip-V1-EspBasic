@@ -577,16 +577,19 @@ void InitWiFi() {
   const unsigned long waitTime = 15000;  // 15 segundos para dar tiempo al WiFi
   // Continuar mientras no esté conectado y no se hayan agotado los intentos
   while (state != WL_CONNECTED && tries < MAX_CONNECT) {
+    currentMillis = millis();
     // Verificar si han pasado 5 segundos
-    if (millis() - initTime >= interval) {
+    if (currentMillis - initTime >= interval) {
       Serial.print(".");
       Serial.print("Intento de conectar a la red WiFi: " + String(SSID) + " ");
       Serial.print(tries + 1);
       Serial.println(" de conexión...");
       // Verificar si el tiempo de espera total ha pasado para intentar reconectar
-      if (millis() - initTime >= waitTime) {
+      if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {
         WiFi.reconnect();
         initTime = millis(); // Reiniciar el temporizador solo después de reconectar
+      }else{
+        initTime = millis();
       }
       state = WiFi.status();
       tries++;
