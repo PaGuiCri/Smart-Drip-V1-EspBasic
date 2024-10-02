@@ -5,6 +5,19 @@
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
 #include <HTTPClient.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+
+/* Configuración del Access Point y DNS para el captive portal */
+const char *apSSID = "ESP32-Setup";
+const char *apPassword = "12345678";
+IPAddress apIP(192, 168, 4, 1); // Dirección IP para el AP
+WebServer server(80);
+DNSServer dnsServer;
+Preferences preferences2;
+
+// Variables de configuración de la red WiFi
+String ssid, password;
 
 /* WiFi */
 //#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
@@ -19,6 +32,11 @@ const int MAX_CONNECT = 10;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
 wl_status_t state;
+bool loadCredentials();
+void saveCredentials(const String &ssid, const String &password);
+void startCaptivePortal();
+void handleRoot();
+void handleSubmit();
 void InitWiFi();
 void handleWiFiReconnection();
 /* Función para calcular CRC32 */
@@ -163,7 +181,15 @@ int closeValveCounter = 10;
 void setup() {
   Serial.begin(9600);
   /* Inicio preferences */
+  preferences2.begin("wifi-creds",false);
   preferences.begin("sensor_data", false);
+  /* Check WiFi credentials */
+  // Verificar si hay credenciales Wi-Fi guardadas
+  if (loadCredentials()) {
+    InitWiFi();
+  } else {
+    startCaptivePortal();
+  }
   idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
   /* Creación de ID único */
   createID();
@@ -244,6 +270,8 @@ void setup() {
   mailStartSystem();
 }
 void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
   /* Verificar cada hora la conexión WiFi y reconecta si se ha perdido */
   handleWiFiReconnection();
   /* Extraer valores de tiempo actual */
@@ -295,6 +323,62 @@ void IRAM_ATTR onTimer1(){
       counter = 0;
       dripTime--;
     }
+  }
+}
+/* Load Credentials from Preferences */ 
+bool loadCredentials() {
+  ssid = preferences2.getString("ssid", "");
+  password = preferences2.getString("password", "");
+
+  if (ssid.length() > 0 && password.length() > 0) {
+    Serial.println("Credenciales Wi-Fi encontradas:");
+    Serial.println("SSID: " + ssid);
+    return true;
+  }
+  return false;
+}
+/* Save Credentials in Preferences */ 
+void saveCredentials(const String &ssid, const String &password) {
+  preferences2.putString("ssid", ssid);
+  preferences2.putString("password", password);
+  Serial.println("Credenciales Wi-Fi guardadas");
+}
+// Iniciar el Captive Portal para ingresar credenciales Wi-Fi
+void startCaptivePortal() {
+  Serial.println("Iniciando AP para configuración");
+
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(apSSID, apPassword);
+
+  dnsServer.start(53, "*", apIP);
+
+  server.on("/", handleRoot);
+  server.on("/submit", handleSubmit);
+  server.begin();
+
+  Serial.println("AP iniciado. Dirección IP: " + WiFi.softAPIP().toString());
+}
+// Página principal del Captive Portal
+void handleRoot() {
+  String html = "<html><body><h1>Configura tu Wi-Fi</h1>";
+  html += "<form action='/submit' method='get'>";
+  html += "SSID: <input type='text' name='ssid'><br>";
+  html += "Password: <input type='text' name='password'><br>";
+  html += "<input type='submit' value='Conectar'>";
+  html += "</form></body></html>";
+  server.send(200, "text/html", html);
+}
+// Manejar el envío de las credenciales Wi-Fi
+void handleSubmit() {
+  ssid = server.arg("ssid");
+  password = server.arg("password");
+  if (ssid.length() > 0 && password.length() > 0) {
+    saveCredentials(ssid, password);
+    server.send(200, "text/html", "<h1>Guardando y conectando...</h1>");
+    delay(2000);
+    ESP.restart();
+  } else {
+    server.send(200, "text/html", "<h1>Error: campos vacíos</h1>");
   }
 }
 /* Get Time */
