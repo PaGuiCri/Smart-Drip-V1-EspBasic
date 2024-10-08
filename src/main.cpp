@@ -25,8 +25,8 @@ String ssid, password;
 #define SSID "MiFibra-21E0_EXT"
 #define PASS "2SSxDxcYNh"
 uint32_t idNumber = 0;    // id Smart Drip crc32
-String idSDHex = "";      //id Smart Drip Hexadecimal
-String idSmartDrip = " Pablo Terraza ";   //id Smart Drip Usuario
+String idSDHex = "";      // id Smart Drip Hexadecimal
+String idSmartDrip = " Pablo Terraza ";   // id Smart Drip Usuario
 String idUser = " PabloG ";   //id usuario
 const int MAX_CONNECT = 10;
 unsigned long lastConnectionTry = 0;
@@ -137,6 +137,7 @@ int dripTime, dripTimeCheck = 0;
 int dripHumidity, dripHumidityCheck = 0;
 int dripTimeLimit = 5;
 int dripHumidityLimit = 45;  
+String lastDrip = "";
 
 /* Variables para el cálculo del caudal */
 volatile int pulses = 0;
@@ -343,7 +344,7 @@ void saveCredentials(const String &ssid, const String &password) {
   preferences2.putString("password", password);
   Serial.println("Credenciales Wi-Fi guardadas");
 }
-// Iniciar el Captive Portal para ingresar credenciales Wi-Fi
+/* Start WiFi Captive Portal */
 void startCaptivePortal() {
   Serial.println("Iniciando AP para configuración");
 
@@ -358,7 +359,7 @@ void startCaptivePortal() {
 
   Serial.println("AP iniciado. Dirección IP: " + WiFi.softAPIP().toString());
 }
-// Página principal del Captive Portal
+/* Captive Portal Main Page */
 void handleRoot() {
   String html = "<html><body><h1>Configura tu Wi-Fi</h1>";
   html += "<form action='/submit' method='get'>";
@@ -368,7 +369,7 @@ void handleRoot() {
   html += "</form></body></html>";
   server.send(200, "text/html", html);
 }
-// Manejar el envío de las credenciales Wi-Fi
+/* Sender WiFi credentials */
 void handleSubmit() {
   ssid = server.arg("ssid");
   password = server.arg("password");
