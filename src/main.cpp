@@ -627,7 +627,7 @@ void NTPsincro(){
 }
 /* Storage Data Sensors */
 void storeDailyData(int currentDay){
-  if (currentDay != lastDay) {  // Comprueba si el último día de guardado es diferente al día actual
+  if (currentDay != lastDay && withinSchedule) {  // Comprueba si el último día de guardado es diferente al día actual
     getHigroValues();
     Serial.println("Nuevo día detectado, almacenando datos...");      
     // Guarda los datos en la memoria no volátil
@@ -638,6 +638,7 @@ void storeDailyData(int currentDay){
     Serial.println("Datos guardados para el día " + String(date));
   }else {
     Serial.println("Los datos para el día " + String(date) + " ya han sido guardados.");
+    dripActived = false;
   }
 }
 /* Sender Monthly Mail */
