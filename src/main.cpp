@@ -47,7 +47,7 @@ void mailErrorDHT11();
 void mailErrorSensorHigro();
 void mailActiveSchedule();
 void mailNoActiveSchedule();
-void mailWeekData(String mesage);
+void mailMonthData(String message);
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
 SMTP_Message mailDripOn;
@@ -57,7 +57,7 @@ SMTP_Message mailErrorDHT;
 SMTP_Message mailErrorHigro;
 SMTP_Message mailActivSchedule; 
 SMTP_Message mailNoActivSchedule;
-SMTP_Message mailWeeklyData;
+SMTP_Message mailMonthlyData;
 bool mailDripOnSended = false;
 bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
@@ -86,11 +86,17 @@ String nowTime = "";
 String date = "";
 String startTime = "08:00";
 String endTime = "10:30";
-String startHourStr, startMinuteStr, endHourStr, endMinuteStr;
-int startHour, startMinute, endHour, endMinute, dayWeek;
-int currentHour, currentMinute;
-bool withinSchedule = false;
+String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
+int startHour, startMinute, endHour, endMinute;
+int currentHour, currentMinute, currentDay, lastDay;
+int emailSendDay = 15;  // Día del mes en que se enviará el correo
+int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
+bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
+void checkAndSendEmail();
+void storeDailyData(int currentDay);
+String monthlyMessage();
+void cleanData();
 void createID();
 /* Sincronización del RTC con NTP */
 const char* ntpServer = "pool.ntp.org";
@@ -109,7 +115,7 @@ float temp = 0, humidity = 0;
 SimpleDHT11 DHT(PinDHT);
 unsigned long TiempoDHT = 0;
 #define SampleDHT 1200
-int getHigroValue = 0;
+int higroValue = 0;
 int substrateHumidity = 0;
 int counter = 0;
 bool outputEstatus = false;
@@ -134,18 +140,12 @@ void pulseCounter(){
   pulses++;
 }
 /* Checking Active Schedule */
+bool withinSchedule = false;
 bool isWithinSchedule(int currentHour, int currentMinute);
 /* Instancia para almacenar datos de riego en memoria flash */
 Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
-/* Contadores de días y semanas */ 
-int dayCounter = 1;    // es necesario?
-/* Array con los nombres de los días de la semana */ 
-const char* diasSemana[] = {"Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"};
-/* Mensaje semanal */
-void weeklyMesage();
-void cleanData();
 #define dripValveVin1 27  // Nueva configuración de pines antes 32. Salida Electroválvula 1
 #define dripValveGND1 26  // Nueva configuración de pines antes 25. Salida Electroválvula 1
 #define dripValveVin2 25  // Segunda válvula opcional
@@ -235,10 +235,10 @@ void setup() {
   mailNoActivSchedule.subject = "Horario de riego NO activo";
   mailNoActivSchedule.addRecipient("Pablo", "falder24@gmail.com"); 
   /* Mail semanal de comprobación de humedades */
-  mailWeeklyData.sender.name = "Smart Drip System";
-  mailWeeklyData.sender.email = AUTHOR_EMAIL;
-  mailWeeklyData.subject = "Mail semanal de humedades";
-  mailWeeklyData.addRecipient("Pablo", "falder24@gmail.com"); 
+  mailMonthlyData.sender.name = "Smart Drip System";
+  mailMonthlyData.sender.email = AUTHOR_EMAIL;
+  mailMonthlyData.subject = "Mail semanal de humedades";
+  mailMonthlyData.addRecipient("Pablo", "falder24@gmail.com"); 
   stopPulse();
   getHigroValues();
   mailStartSystem();
@@ -246,17 +246,14 @@ void setup() {
 void loop() {
   /* Verificar cada hora la conexión WiFi y reconecta si se ha perdido */
   handleWiFiReconnection();
-  /* Extraer valores de tiempo actual */
+  /* Extraer valores de tiempo actual y selección de horario */
   extractTimeValues();
-  /* Comprobación de horario */
-  currentHour = rtc.getHour(true); // Obtenemos la hora actual. True para formato 24h  
-  currentMinute = rtc.getMinute();
-  Serial.print("Hora actual: ");
-  Serial.print(currentHour);
-  Serial.print(":");
-  Serial.print(currentMinute);
-  Serial.println();
-  bool withinSchedule = isWithinSchedule(currentHour, currentMinute);   // True para formato de 24h
+  /* Almacenar datos en NVS */
+  storeDailyData(currentDay);
+  /* Comprobacion y envío de mail mensual con los datos almacenados */
+  checkAndSendEmail();
+  /* Comprobación de horario activo */
+  withinSchedule = isWithinSchedule(currentHour, currentMinute);
   /* Comprobar si el temporizador de riego está habilitado */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;  // Actualizar el estado de la activación del riego
@@ -269,12 +266,12 @@ void loop() {
     Serial.println("Timer disabled");
   } else {       // Si el temporizador está habilitado, indicar que el proceso de riego está en curso
     Serial.println("Timer enabled");
-    Serial.println("Irrigation process underway");
+    Serial.println("Drip process underway");
   }
     // Mostrar los valores actuales de tiempo y humedad de riego
-  Serial.print("Irrigation time: ");
+  Serial.print("Drip time: ");
   Serial.println(dripTime);
-  Serial.print("Irrigation humidity: ");
+  Serial.print("Drip humidity: ");
   Serial.println(dripHumidity);
   if (withinSchedule) {   // Si estamos dentro del horario de riego
     /* Manejar el proceso de riego cuando estamos dentro del horario programado */
@@ -299,6 +296,9 @@ void IRAM_ATTR onTimer1(){
 }
 /* Get Time */
 void extractTimeValues() {
+  currentHour = rtc.getHour(true); // Obtenemos la hora actual, sólo el dato de la hora (0-23). True para formato 24h  
+  currentMinute = rtc.getMinute(); // Obtenemos los minutos actuales
+  currentDay = rtc.getDay();       // Obtenemos el número de día del mes (1-31)
   startHourStr = startTime.substring(0, 2);
   startMinuteStr = startTime.substring(3, 5);
   endHourStr = endTime.substring(0, 2);
@@ -307,6 +307,11 @@ void extractTimeValues() {
   startMinute = startMinuteStr.toInt();
   endHour = endHourStr.toInt();
   endMinute = endMinuteStr.toInt();
+  Serial.print("Hora actual: ");
+  Serial.print(currentHour);
+  Serial.print(":");
+  Serial.print(currentMinute);
+  Serial.println();
 }
 /* Checking active schedule */
 bool isWithinSchedule(int currentHour, int currentMinute) {
@@ -328,20 +333,6 @@ void handleDrip() {
   Serial.println("Active irrigation schedule");
   if (!mailActiveScheduleCheck) {  
     mailActiveSchedule();  // Envío mail horario de riego activo - desactivado
-  }
-  if (currentMillis - previousMillis >= intervalDay) {
-    previousMillis = currentMillis;
-    // Lee los datos de los sensores si es necesario        
-    // Guarda los datos en la memoria no volátil
-    preferences.putInt(("Humedad_day" + String(dayWeek)).c_str(), substrateHumidity);
-    preferences.putBool(("Riego_day" + String(dayWeek)).c_str(), dripActived);
-    preferences.putInt("dayWeek", dayWeek);
-    dripActived = false;
-    if (dayWeek >= 7) {  // Cuando es domingo se crea y se envía el mensaje semanal con la información sobre el estado de Smart Drip
-      weeklyMesage();
-      dayWeek = 1;
-      preferences.putInt("dayWeek", dayWeek);
-    }
   }
   if (substrateHumidity > dripHumidity) {
     if (!checkTimer) {
@@ -417,8 +408,8 @@ void finalizeDrip() {
 }
 /* Getting Higro Measurements */
 void getHigroValues(){
-  getHigroValue = analogRead(PinHigro);
-  substrateHumidity = map(getHigroValue, wet, dry, 100, 0);
+  higroValue = analogRead(PinHigro);
+  substrateHumidity = map(higroValue, wet, dry, 100, 0);
   Serial.print("Substrate humidity: "); 
   Serial.println(substrateHumidity + "%"); 
 }
@@ -633,10 +624,62 @@ void NTPsincro(){
   Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
   nowTime = rtc.getTime();
   date = rtc.getDate();
-  dayWeek = rtc.getDayofWeek() == 0 ? 7 : rtc.getDayofWeek();
-  if(dayWeek == 7){
-    dayWeek = preferences.getInt("dayWeek", dayWeek);
+}
+/* Storage Data Sensors */
+void storeDailyData(int currentDay){
+  if (currentDay != lastDay) {  // Comprueba si el último día de guardado es diferente al día actual
+    getHigroValues();
+    Serial.println("Nuevo día detectado, almacenando datos...");      
+    // Guarda los datos en la memoria no volátil
+    preferences.putInt(("Humedad_day" + String(currentDay)).c_str(), substrateHumidity);
+    preferences.putBool(("Riego_day" + String(currentDay)).c_str(), dripActived);
+    dripActived = false;
+    lastDay = currentDay;
+    Serial.println("Datos guardados para el día " + String(date));
+  }else {
+    Serial.println("Los datos para el día " + String(date) + " ya han sido guardados.");
   }
+}
+/* Sender Monthly Mail */
+void checkAndSendEmail(){
+  // Comprobar si es el día y la hora configurados para enviar el correo
+  if (currentDay == emailSendDay && currentHour >= emailSendHour && !emailSentToday) {
+    //Envía correo mensual con los datos almacenados
+    dataMonthlyMessage = monthlyMessage();
+    mailMonthData(dataMonthlyMessage);
+    Serial.println("Informe mensual enviado");
+    // Marcar que el correo ya fue enviado hoy
+    emailSentToday = true;
+    // Borrar datos guardados
+    cleanData();
+  }
+  // Si es otro día, restablecer la bandera para permitir envío el próximo mes
+  if (currentDay != emailSendDay) {
+    emailSentToday = false;
+  }
+}
+/* Monthly Data Message Maker */
+String monthlyMessage() {
+  String emailBody = "";
+  // Iterar sobre los días del mes (1-31)
+  for (int day = 1; day <= 31; day++) {
+    // Crear claves únicas para cada día (para temperatura y humedad, por ejemplo)
+    String dayKeyHum = "Humedad_day" + String(day);
+    String dayKeyRiego = "Riego_day" + String(day);
+    // Verificar si existen los datos para ese día en `Preferences`
+    if (preferences.isKey(dayKeyRiego.c_str()) && preferences.isKey(dayKeyHum.c_str())) {
+      // Recuperar los valores de temperatura y humedad
+      int humedad = preferences.getInt(dayKeyHum.c_str());
+      bool dripWasOn = preferences.getBool(dayKeyRiego.c_str());
+      // Añadir los datos de este día al cuerpo del correo
+      emailBody += "Día " + String(day) + ":\n" + " Humedad = " + String(humedad) + "%\n"
+                   "Riego activado: " + String(dripWasOn) + "\n";
+    } else {
+      // Si no hay datos para este día, agregar una entrada vacía
+      emailBody += "Día " + String(day) + ": Sin datos.\n";
+    }
+  }
+  return emailBody;  // Devuelve el mensaje con los datos almacenados por días
 }
 /* Mail Start System */
 void mailStartSystem(){
@@ -838,31 +881,17 @@ void smtpCallback(SMTP_Status status){
     Serial.println(".....................\n");
   }
 }
-/* Data Weekly Mesage */
-void weeklyMesage(){
-  String mesage = "";
-  for(int i = 1; i <= 7; i++){
-    int sensor1Data = preferences.getInt(("Humedad_day" + String(i)).c_str(), 0);
-    bool drip = preferences.getBool(("Riego_day" + String(i)).c_str(), false);
-    // Añade los datos al mensaje con el nombre del día correspondiente
-    mesage += String(diasSemana[i-1]) + ": Humedad = " + String(sensor1Data) + ", Riego = " + (drip ? "Activado" : "No Activado") + "\n";
-  }
-  // Llama a la función de envío de correo
-  mailWeekData(mesage);
-  // Limpia los datos después de enviar el correo
-  cleanData();
-}
-/* Mail Data Weekly */
-void mailWeekData(String mesage){
+/* Mail Monthly Data */
+void mailMonthData(String message){
   date = rtc.getDate();
   String textMsg = idSDHex + " \n" + idUser + " \n"
-                   " Mensaje semanal de comprobación de humedades del sustrato del Smart Drip " + idSmartDrip + " \n" 
+                   " Mensaje mensual de comprobación de humedades del sustrato del Smart Drip " + idSmartDrip + " \n" 
                    + " con fecha " + String(date) + " los datos son: " + " \n"
-                   + String(mesage) + "\n";
-  mailErrorHigro.text.content = textMsg.c_str();
-  mailErrorHigro.text.charSet = "us-ascii";
-  mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+                   + String(message) + "\n";
+  mailMonthlyData.text.content = textMsg.c_str();
+  mailMonthlyData.text.charSet = "us-ascii";
+  mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
     return;
   if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
@@ -875,7 +904,7 @@ void mailWeekData(String mesage){
 }
 /* Clean Data Preferences */
 void cleanData(){
-  for(int i = 1; i <= 7; i++){
+  for(int i = 1; i <= 31; i++){
      preferences.remove(("Humedad_day" + String(i)).c_str());
      preferences.remove(("Riego_day" + String(i)).c_str());
   }
