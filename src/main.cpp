@@ -88,13 +88,14 @@ String startTime = "08:00";
 String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
-int currentHour, currentMinute, currentDay, lastDay;
+int currentHour, currentMinute, currentDay, lastDay, lastDayDrip, counterDripDays;
 int emailSendDay = 15;  // Día del mes en que se enviará el correo
 int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
 void checkAndSendEmail();
 void storeDailyData(int currentDay);
+void storeDripData(int currentDay);
 String monthlyMessage();
 void cleanData();
 void createID();
@@ -401,6 +402,8 @@ void finalizeDrip() {
     timerAlarmDisable(timer1);
     if (dripValve == true) {
       closeDripValve();
+      dripActived = true;
+      storeDripData(currentDay);
       dripValve = false;
       mailDripOnSended = false;
     }
@@ -629,16 +632,27 @@ void NTPsincro(){
 void storeDailyData(int currentDay){
   if (currentDay != lastDay && withinSchedule) {  // Comprueba si el último día de guardado es diferente al día actual
     getHigroValues();
+    getDHTValues();
     Serial.println("Nuevo día detectado, almacenando datos...");      
     // Guarda los datos en la memoria no volátil
-    preferences.putInt(("Humedad_day" + String(currentDay)).c_str(), substrateHumidity);
-    preferences.putBool(("Riego_day" + String(currentDay)).c_str(), dripActived);
-    dripActived = false;
+    preferences.putInt(("Higro_day" + String(currentDay)).c_str(), substrateHumidity);
+    if(dhtOk){
+    preferences.putInt(("Humedad_day" + String(currentDay)).c_str(), humidity);
+    preferences.putInt(("Temp_day" + String(currentDay)).c_str(), temp);
+    }
     lastDay = currentDay;
     Serial.println("Datos guardados para el día " + String(date));
   }else {
     Serial.println("Los datos para el día " + String(date) + " ya han sido guardados.");
     dripActived = false;
+  }
+}
+/* Storage Drip Data */
+void storeDripData(int currentDay){
+  if(currentDay != lastDayDrip && dripActived){
+    preferences.putBool(("Riego_day" + String(currentDay)).c_str(), dripActived);
+    dripActived = false;
+    lastDayDrip = currentDay;
   }
 }
 /* Sender Monthly Mail */
@@ -665,15 +679,21 @@ String monthlyMessage() {
   // Iterar sobre los días del mes (1-31)
   for (int day = 1; day <= 31; day++) {
     // Crear claves únicas para cada día (para temperatura y humedad, por ejemplo)
+    String dayKeyHigro = "Higro_day" + String(day);
     String dayKeyHum = "Humedad_day" + String(day);
+    String dayKeyTemp = "Temp_day" + String(day);
     String dayKeyRiego = "Riego_day" + String(day);
     // Verificar si existen los datos para ese día en `Preferences`
-    if (preferences.isKey(dayKeyRiego.c_str()) && preferences.isKey(dayKeyHum.c_str())) {
+    if (preferences.isKey(dayKeyRiego.c_str()) && preferences.isKey(dayKeyHigro.c_str())) {
       // Recuperar los valores de temperatura y humedad
-      int humedad = preferences.getInt(dayKeyHum.c_str());
+      int higro = preferences.getInt(dayKeyHigro.c_str());
+      int hum = preferences.getInt(dayKeyHum.c_str());
+      int tempe = preferences.getInt(dayKeyTemp.c_str());
       bool dripWasOn = preferences.getBool(dayKeyRiego.c_str());
       // Añadir los datos de este día al cuerpo del correo
-      emailBody += "Día " + String(day) + ":\n" + " Humedad = " + String(humedad) + "%\n"
+      emailBody += "Día " + String(day) + ":\n" + " Humedad del sustrato = " + String(higro) + "%\n"
+                   "Humedad ambiental = " + String(hum) + "%\n"
+                   "Temperatura ambiental = " + String(tempe) + " \xB0" + "C\n"   // \xB0 es el código para incluir el símbolo de grados centígrados
                    "Riego activado: " + String(dripWasOn) + "\n";
     } else {
       // Si no hay datos para este día, agregar una entrada vacía
