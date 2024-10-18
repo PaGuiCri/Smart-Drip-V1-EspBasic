@@ -63,6 +63,10 @@ bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
 bool mailActiveScheduleCheck = false;
 bool mailNoActiveScheduleCheck = false;
+bool mailStartSystemActive = true;
+bool mailActiveScheduleActive = true;
+bool mailNoActiveScheduleActive = true;
+bool mailSmartDripOnActive = true;
 
 /* Timers */
 volatile bool toggle = true;
@@ -88,14 +92,14 @@ String startTime = "08:00";
 String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
-int currentHour, currentMinute, currentDay, lastDay, lastDayDrip, counterDripDays;
+int currentHour, currentMinute, currentDay, lastDay, lastDrip, lastDayDrip, counterDripDays;
 int emailSendDay = 15;  // Día del mes en que se enviará el correo
 int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
 void checkAndSendEmail();
-void storeDailyData(int currentDay);
-void storeDripData(int currentDay);
+void storeDailyData(int currentDay,int currentHour, int currentMinute);
+void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive);
 String monthlyMessage();
 void cleanData();
 void createID();
@@ -242,7 +246,9 @@ void setup() {
   mailMonthlyData.addRecipient("Pablo", "falder24@gmail.com"); 
   stopPulse();
   getHigroValues();
-  mailStartSystem();
+  if(mailStartSystemActive){
+    mailStartSystem();
+  }
 }
 void loop() {
   /* Verificar cada hora la conexión WiFi y reconecta si se ha perdido */
@@ -250,7 +256,8 @@ void loop() {
   /* Extraer valores de tiempo actual y selección de horario */
   extractTimeValues();
   /* Almacenar datos en NVS */
-  storeDailyData(currentDay);
+  storeDailyData(currentDay, currentHour, currentMinute);
+  storeDripData(currentDay, currentHour, currentMinute, dripActived);
   /* Comprobacion y envío de mail mensual con los datos almacenados */
   checkAndSendEmail();
   /* Comprobación de horario activo */
@@ -332,7 +339,7 @@ void handleDrip() {
   getHigroValues();
   mailNoActiveScheduleCheck = false;
   Serial.println("Active irrigation schedule");
-  if (!mailActiveScheduleCheck) {  
+  if (!mailActiveScheduleCheck && mailActiveScheduleActive) {  
     mailActiveSchedule();  // Envío mail horario de riego activo - desactivado
   }
   if (substrateHumidity > dripHumidity) {
@@ -357,7 +364,7 @@ void handleDrip() {
       Serial.print(totalLitros);
       Serial.println(" L.");
       }
-      if (!mailDripOnSended) {  
+      if (!mailDripOnSended && mailSmartDripOnActive) {  
         mailSmartDripOn();
       }
     }
@@ -381,7 +388,7 @@ void handleOutOfScheduleDrip() {
   Serial.print("Caudal de riego fuera de horario: ");  
   Serial.println(caudal);
   mailActiveScheduleCheck = false;
-  if (!mailNoActiveScheduleCheck) {
+  if (!mailNoActiveScheduleCheck && mailNoActiveScheduleActive) {
     mailNoActiveSchedule();
   }
   if (!dripValve && caudal != 0) {
@@ -402,8 +409,6 @@ void finalizeDrip() {
     timerAlarmDisable(timer1);
     if (dripValve == true) {
       closeDripValve();
-      dripActived = true;
-      storeDripData(currentDay);
       dripValve = false;
       mailDripOnSended = false;
     }
@@ -629,8 +634,8 @@ void NTPsincro(){
   date = rtc.getDate();
 }
 /* Storage Data Sensors */
-void storeDailyData(int currentDay){
-  if (currentDay != lastDay && withinSchedule) {  // Comprueba si el último día de guardado es diferente al día actual
+void storeDailyData(int currentDay, int currentHour, int currentMinute){
+  if (currentDay != lastDay && currentHour == endHour && currentMinute == endMinute) {  // Comprueba si el último día de guardado es diferente al día actual y si estamos finalizando el horario activo de riego
     getHigroValues();
     getDHTValues();
     Serial.println("Nuevo día detectado, almacenando datos...");      
@@ -648,11 +653,19 @@ void storeDailyData(int currentDay){
   }
 }
 /* Storage Drip Data */
-void storeDripData(int currentDay){
-  if(currentDay != lastDayDrip && dripActived){
+void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive){
+  if(currentDay != lastDayDrip && currentHour == endHour && currentMinute == endMinute){
     preferences.putBool(("Riego_day" + String(currentDay)).c_str(), dripActived);
+    if(!dripActive){
+      counterDripDays ++;
+    }else{
+      counterDripDays = 0;
+    }
     dripActived = false;
     lastDayDrip = currentDay;
+  }
+  if(counterDripDays == 25){
+
   }
 }
 /* Sender Monthly Mail */
@@ -926,7 +939,9 @@ void mailMonthData(String message){
 /* Clean Data Preferences */
 void cleanData(){
   for(int i = 1; i <= 31; i++){
+     preferences.remove(("Higro_day" + String(i)).c_str());
      preferences.remove(("Humedad_day" + String(i)).c_str());
+     preferences.remove(("Temp_day" + String(i)).c_str());
      preferences.remove(("Riego_day" + String(i)).c_str());
   }
 }
