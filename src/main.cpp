@@ -40,14 +40,14 @@ uint32_t crc32(const uint8_t *data, size_t length) {
 #define AUTHOR_PASSWORD "kcjbfgngmfgkcxtw"
 SMTPSession smtp;
 void smtpCallback(SMTP_Status status);
-void mailSmartDripOn();
-void mailStartSystem();
-void mailErrorValve();
-void mailErrorDHT11();
-void mailErrorSensorHigro();
-void mailActiveSchedule();
-void mailNoActiveSchedule();
-void mailMonthData(String message);
+void mailSmartDripOn();                // mail proceso de riego iniciado
+void mailStartSystem();                // mail inicio sistema
+void mailErrorValve();                 // mail error en electroválvula
+void mailErrorDHT11();                 // mail error en sensor DHT11
+void mailErrorSensorHigro();           // mail error en sensor higrometro
+void mailActiveSchedule();             // mail horario de riego activo
+void mailNoActiveSchedule();           // mail horario de riego no activo
+void mailMonthData(String message);    // mail datos de riego mensual
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
 SMTP_Message mailDripOn;
@@ -61,6 +61,7 @@ SMTP_Message mailMonthlyData;
 bool mailDripOnSended = false;
 bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
+bool mailErrorHigroSended = false;
 bool mailActiveScheduleCheck = false;
 bool mailNoActiveScheduleCheck = false;
 bool mailStartSystemActive = true;
@@ -101,7 +102,7 @@ void checkAndSendEmail();
 void storeDailyData(int currentDay,int currentHour, int currentMinute);
 void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive);
 String monthlyMessage();
-void cleanData();
+void cleanData();   
 void createID();
 /* Sincronización del RTC con NTP */
 const char* ntpServer = "pool.ntp.org";
@@ -109,23 +110,28 @@ const long gmtOFFset_sec = 3600;
 const int daylightOffset_sec = 3600;
 
 /* Configuración de terminales para higrómetro y DHT11  */
-void getDHTValues();
-void getHigroValues();
-void handleDrip();
-void handleOutOfScheduleDrip();
-void finalizeDrip();
+void getDHTValues();     // Método para obtener los valores del sensor DHT11
+void getHigroValues();   // Método para obtener los valores del sensor higrómetro
+void getCalibrateHigroData();    // Método para recuperar los valores almacenados de la calibración del sensor higrómetro
+int calibrateHigro(const char* fase, int minRange, int maxRange);   // Método para calibrar el sensor higrómetro según fase requerida
+void startCalibration();   // Método para iniciar la calibración del sensor higrómetro
+bool calibrationOk();     // Método para comprobar que la calibración ha sido correcta
+void handleDrip();     // Método para el manejo de los procesos de riego
+void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
+void finalizeDrip();   // Método para el manejo de la finalización del proceso de riego
 #define PinHigro 34  // Nueva configuración de pines antes 34. volvemos al pin 34 desde el 13
 #define PinDHT 4     // El pin del sensor DHT tiene q ser el 4 si se trabaja con la biblioteca SimpleDHT
-float temp = 0, humidity = 0;
+float temp, humidity = 0;   // Variables para almacenar los datos recibidos del sensor DHT11
 SimpleDHT11 DHT(PinDHT);
 unsigned long TiempoDHT = 0;
 #define SampleDHT 1200
-int higroValue = 0;
+int higroValue, dryValue, wetValue = 0;
 int substrateHumidity = 0;
 int counter = 0;
 bool outputEstatus = false;
-const int dry = 445;
-const int wet = 2;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
+//const int dry = 445;
+//const int wet = 2;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
+int dry, wet = 0;            // Variables para almacenar los valores límites del sensor higrómetro
 int dripTime, dripTimeCheck = 0;
 int dripHumidity, dripHumidityCheck = 0;
 int dripTimeLimit = 5;
@@ -229,6 +235,11 @@ void setup() {
   mailErrorDHT.sender.email = AUTHOR_EMAIL;
   mailErrorDHT.subject = "Estado sensor medio ambiente";
   mailErrorDHT.addRecipient("Pablo", "falder24@gmail.com"); 
+  /* Mail de error en sensor Higro */
+  mailErrorHigro.sender.name = "Smart Drip System";
+  mailErrorHigro.sender.email = AUTHOR_EMAIL;
+  mailErrorHigro.subject = "Estado sensor higro";
+  mailErrorHigro.addRecipient("Pablo", "falder24@gmail.com"); 
   /* Mail de horario de riego activo */
   mailActivSchedule.sender.name = "Smart Drip System";
   mailActivSchedule.sender.email = AUTHOR_EMAIL;
@@ -245,6 +256,7 @@ void setup() {
   mailMonthlyData.subject = "Mail semanal de humedades";
   mailMonthlyData.addRecipient("Pablo", "falder24@gmail.com"); 
   stopPulse();
+  getCalibrateHigroData();
   getHigroValues();
   if(mailStartSystemActive){
     mailStartSystem();
@@ -414,10 +426,102 @@ void finalizeDrip() {
     }
   }
 }
+/* Get Higro Sensor Data */
+void getCalibrateHigroData(){
+  if (preferences.isKey("dry") && preferences.isKey("wet")) {
+    dry = preferences.getInt("dry");
+    wet = preferences.getInt("wet");
+    Serial.println("Valores de calibración cargados desde memoria:");
+    Serial.print("Valor Seco (0%): ");
+    Serial.println(dry);
+    Serial.print("Valor Húmedo (100%): ");
+    Serial.println(wet);
+  } else {
+    Serial.println("No se encontraron valores de calibración. Iniciando calibración...");
+    startCalibration();
+  }
+}
+/* Calibrate Higro Process */
+int calibrateHigro(const char* fase, int minRange, int maxRange) {
+  Serial.println("Proceso de calibración del sensor de humedad iniciado. Siga las siguientes indicaciones: \n");
+  if (strcmp(fase, "aire") == 0) {
+    Serial.print("Por favor, asegúrese de que el sensor no está en contacto con ninguna sustancia húmeda, \n");
+    Serial.println("deje el sensor en el aire y espere 10 segundos.");
+  } else {
+    Serial.println("introduzca el sensor en agua y espere 10 segundos.");
+  }
+  for(int i = 10; i = 0; i--){   // Espera 10 segundos para que el usuario coloque el sensor en el aire
+    Serial.println (i);
+    delay(1000);
+  }
+  int valor = (strcmp(fase, "aire") == 0) ? 4095 : 0;  // Inicialización según la fase
+  for (int i = 0; i < 5; i++) {
+    int lectura = analogRead(PinHigro);
+    if (strcmp(fase, "aire") == 0) {
+      if (lectura < valor) {
+        valor = lectura;  // Busca el mínimo en aire
+      }
+    } else {
+      if (lectura > valor) {
+        valor = lectura;  // Busca el máximo en agua
+      }
+    }
+    delay(2000);  // Espera de 2 segundos entre lecturas
+  }
+  Serial.print("Calibración en ");
+  Serial.print(fase);
+  Serial.println(" completada. Valor: " + valor);
+  if (valor < minRange || valor > maxRange) {
+    Serial.print("ERROR: Valor de ");
+    Serial.print(fase);
+    Serial.println(" fuera del rango esperado.");
+    return -1;  // Indica que la calibración falló
+  }
+
+  return valor;  // Retorna el valor calibrado si es válido
+}
+/* Check Calibration */
+bool calibrationOk() {
+  if (dryValue < 425 || dryValue > 500) {
+    return false;
+  }
+  if (wetValue < 10 || wetValue > 50) {
+    return false;
+  }
+  if (dryValue <= wetValue) {
+    return false;
+  }
+  return true;
+}
+/* Start Calibration Phases */
+void startCalibration() {
+  dryValue = calibrateHigro("aire", 425, 500);
+  if (dryValue == -1) {
+    Serial.println("ERROR: Calibración en aire fallida. Repita el proceso.");
+    startCalibration();
+    return;
+  }
+  wetValue = calibrateHigro("agua", 10, 50);
+  if (wetValue == -1 || dryValue <= wetValue) {
+    Serial.println("ERROR: Calibración en agua fallida o inconsistente. Repita el proceso.");
+    startCalibration();
+    return;
+  }
+  preferences.putInt("valorSeco", dryValue);
+  preferences.putInt("valorHumedo", wetValue);
+  Serial.println("Calibración completada y válida.");
+  mailErrorHigroSended = false;
+}
 /* Getting Higro Measurements */
 void getHigroValues(){
   higroValue = analogRead(PinHigro);
   substrateHumidity = map(higroValue, wet, dry, 100, 0);
+  if(higroValue < wet || higroValue > dry){
+    Serial.println("ADVERTENCIA: El sensor está fuera del rango calibrado. Recalibración recomendada.");
+    if(!mailErrorDHTSended){
+      mailErrorSensorHigro();
+    }
+  }
   Serial.print("Substrate humidity: "); 
   Serial.println(substrateHumidity + "%"); 
 }
@@ -755,13 +859,13 @@ void mailActiveSchedule(){
                    " Hora de inicio: " + String(startTime) + "\n"
                    " Hora de fin: " + String(endTime) + "\n"
                    " Humedad sustrato: " + String(substrateHumidity) + "\n";
-  mailStartSDS.text.content = textMsg.c_str();
-  mailStartSDS.text.charSet = "us-ascii";
-  mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  mailActivSchedule.text.content = textMsg.c_str();
+  mailActivSchedule.text.charSet = "us-ascii";
+  mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
     return;
-  if(!MailClient.sendMail(&smtp, &mailStartSDS)){
+  if(!MailClient.sendMail(&smtp, &mailActivSchedule)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
@@ -785,13 +889,13 @@ void mailNoActiveSchedule(){
                    " Hora de inicio: " + String(startTime) + "\n"
                    " Hora de fin: " + String(endTime) + "\n"
                    " Humedad sustrato: " + String(substrateHumidity) + "\n";
-  mailStartSDS.text.content = textMsg.c_str();
-  mailStartSDS.text.charSet = "us-ascii";
-  mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  mailNoActivSchedule.text.content = textMsg.c_str();
+  mailNoActivSchedule.text.charSet = "us-ascii";
+  mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
     return;
-  if(!MailClient.sendMail(&smtp, &mailStartSDS)){
+  if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
@@ -814,10 +918,8 @@ void mailSmartDripOn(){
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-
   if(!smtp.connect(&session))
     return;
-
   if(!MailClient.sendMail(&smtp, &mailDripOn)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
@@ -838,10 +940,8 @@ void mailErrorValve(){
   mailErrValve.text.charSet = "us-ascii";
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-
-   if(!smtp.connect(&session))
+  if(!smtp.connect(&session))
     return;
-
   if(!MailClient.sendMail(&smtp, &mailErrValve)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
@@ -860,10 +960,8 @@ void mailErrorDHT11(){
   mailErrorDHT.text.charSet = "us-ascii";
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-
   if(!smtp.connect(&session))
     return;
-
   if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
@@ -876,7 +974,8 @@ void mailErrorDHT11(){
 /* Mail Hygro Error */
 void mailErrorSensorHigro(){
   String textMsg = idSDHex + " \n" + idUser + " \n"
-                   " El sensor de humedad del sustrato del Smart Drip" + idSmartDrip + " está fuera de rango o dañado \n"
+                   " El sensor de humedad del sustrato del Smart Drip" + idSmartDrip + " está fuera de rango o dañado. \n"
+                   " Se recomienda recalibración \n"
                    " proceda a su inspección o llame al servicio técnico \n";
   mailErrorHigro.text.content = textMsg.c_str();
   mailErrorHigro.text.charSet = "us-ascii";
@@ -890,6 +989,7 @@ void mailErrorSensorHigro(){
     Serial.println("Correo enviado con exito");
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
+  mailErrorHigroSended = true;
   smtp.closeSession();
 }
 /* Check Mail Callback */
@@ -928,7 +1028,7 @@ void mailMonthData(String message){
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
     return;
-  if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
+  if(!MailClient.sendMail(&smtp, &mailMonthlyData)){
     Serial.println("Error envío Email, " + smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
