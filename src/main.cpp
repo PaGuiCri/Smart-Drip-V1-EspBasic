@@ -428,14 +428,20 @@ void finalizeDrip() {
 }
 /* Get Higro Sensor Data */
 void getCalibrateHigroData(){
-  if (preferences.isKey("dry") && preferences.isKey("wet")) {
-    dry = preferences.getInt("dry");
-    wet = preferences.getInt("wet");
+  if (preferences.isKey("dryValue") && preferences.isKey("wetValue")) {
+    dry = dryValue = preferences.getInt("dryValue");
+    wet = wetValue = preferences.getInt("wetValue");
     Serial.println("Valores de calibración cargados desde memoria:");
     Serial.print("Valor Seco (0%): ");
     Serial.println(dry);
     Serial.print("Valor Húmedo (100%): ");
     Serial.println(wet);
+    if (calibrationOk()) {
+      Serial.println("Calibración válida.");
+    } else {
+      Serial.println("ERROR: Calibración inválida. Iniciando recalibración...");
+      startCalibration();
+    }
   } else {
     Serial.println("No se encontraron valores de calibración. Iniciando calibración...");
     startCalibration();
@@ -450,11 +456,15 @@ int calibrateHigro(const char* fase, int minRange, int maxRange) {
   } else {
     Serial.println("introduzca el sensor en agua y espere 10 segundos.");
   }
-  for(int i = 10; i = 0; i--){   // Espera 10 segundos para que el usuario coloque el sensor en el aire
-    Serial.println (i);
+  Serial.println("La calibración empezará en: ");
+  for(int i = 10; i > 0; i--){ 
+    Serial.print("Tiempo: ");  // Espera 10 segundos para que el usuario coloque el sensor en el aire
+    Serial.print(i);
+    Serial.println("s.");
     delay(1000);
   }
   int valor = (strcmp(fase, "aire") == 0) ? 4095 : 0;  // Inicialización según la fase
+    Serial.println("Iniciando lecturas...");
   for (int i = 0; i < 5; i++) {
     int lectura = analogRead(PinHigro);
     if (strcmp(fase, "aire") == 0) {
@@ -466,6 +476,7 @@ int calibrateHigro(const char* fase, int minRange, int maxRange) {
         valor = lectura;  // Busca el máximo en agua
       }
     }
+    Serial.println("Lectura " + String(i + 1) + ": " + lectura);
     delay(2000);  // Espera de 2 segundos entre lecturas
   }
   Serial.print("Calibración en ");
@@ -482,10 +493,10 @@ int calibrateHigro(const char* fase, int minRange, int maxRange) {
 }
 /* Check Calibration */
 bool calibrationOk() {
-  if (dryValue < 425 || dryValue > 500) {
+  if (dryValue < 400 || dryValue > 500) {
     return false;
   }
-  if (wetValue < 10 || wetValue > 50) {
+  if (wetValue < 0 || wetValue > 100) {
     return false;
   }
   if (dryValue <= wetValue) {
@@ -495,22 +506,31 @@ bool calibrationOk() {
 }
 /* Start Calibration Phases */
 void startCalibration() {
-  dryValue = calibrateHigro("aire", 425, 500);
+  dryValue = calibrateHigro("aire", 400, 500);
   if (dryValue == -1) {
     Serial.println("ERROR: Calibración en aire fallida. Repita el proceso.");
     startCalibration();
     return;
   }
-  wetValue = calibrateHigro("agua", 10, 50);
+  wetValue = calibrateHigro("agua", 0, 100);
   if (wetValue == -1 || dryValue <= wetValue) {
     Serial.println("ERROR: Calibración en agua fallida o inconsistente. Repita el proceso.");
     startCalibration();
     return;
   }
-  preferences.putInt("valorSeco", dryValue);
-  preferences.putInt("valorHumedo", wetValue);
+  preferences.putInt("dryValue", dryValue);
+  preferences.putInt("wetValue", wetValue);
   Serial.println("Calibración completada y válida.");
-  mailErrorHigroSended = false;
+  Serial.println("Valores almacenados en memoria");
+  // Imprimir los valores almacenados para verificación
+  int storedDryValue = preferences.getInt("dryValue");
+  int storedWetValue = preferences.getInt("wetValue");
+  Serial.println("Verificación de valores almacenados:");
+  Serial.print("Valor en aire (0% humedad): ");
+  Serial.println(storedDryValue);
+  Serial.print("Valor en agua (100% humedad): ");
+  Serial.println(storedWetValue);
+  mailErrorHigroSended = false;      // Resetear el flag de error de envío de email
 }
 /* Getting Higro Measurements */
 void getHigroValues(){
@@ -618,6 +638,7 @@ void stopPulse(){
   outputEstatus = digitalRead(dripValveGND1);
   Serial.print("VálvulaRiegoGND: " + outputEstatus);
   Serial.println("Pulso electroválvula no activo");
+  delay(500);
 }
 /* Flow meter */
 void flowMeter(){
