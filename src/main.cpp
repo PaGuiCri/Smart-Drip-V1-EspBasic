@@ -5,7 +5,6 @@
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
 #include <HTTPClient.h>
-
 /* WiFi */
 //#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
 //#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
@@ -68,24 +67,20 @@ bool mailStartSystemActive = true;
 bool mailActiveScheduleActive = true;
 bool mailNoActiveScheduleActive = true;
 bool mailSmartDripOnActive = true;
-
 /* Timers */
 volatile bool toggle = true;
 void IRAM_ATTR onTimer1();
 hw_timer_t *timer1 = NULL;
-
 /* Open/Close Solenoid Valve  */
 void openDripValve();
 void closeDripValve();
 void stopPulse();
 void closeValveError();
-
 /* Define NTP Client to get time */
 ESP32Time rtc;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 void NTPsincro();
-
 /* Variables to save date and time */
 String nowTime = "";
 String date = "";
@@ -108,7 +103,6 @@ void createID();
 const char* ntpServer = "pool.ntp.org";
 const long gmtOFFset_sec = 3600;
 const int daylightOffset_sec = 3600;
-
 /* Configuración de terminales para higrómetro y DHT11  */
 void getDHTValues();     // Método para obtener los valores del sensor DHT11
 void getHigroValues();   // Método para obtener los valores del sensor higrómetro
@@ -136,7 +130,6 @@ int dripTime, dripTimeCheck = 0;
 int dripHumidity, dripHumidityCheck = 0;
 int dripTimeLimit = 5;
 int dripHumidityLimit = 45;  
-
 /* Variables para el cálculo del caudal */
 volatile int pulses = 0;
 float caudal = 0.0;
@@ -157,20 +150,19 @@ bool isWithinSchedule(int currentHour, int currentMinute);
 Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
+/* Pin Config */
 #define dripValveVin1 27  // Nueva configuración de pines antes 32. Salida Electroválvula 1
 #define dripValveGND1 26  // Nueva configuración de pines antes 25. Salida Electroválvula 1
 #define dripValveVin2 25  // Segunda válvula opcional
 #define dripValveGND2 33  // Segunda válvula opcional
 #define flowSensor  13    // Nueva configuración de pines antes 20 pendiente test pin 13
 #define pinLed 2          // pin para señal luminosa desde la caja
-
-bool AUTO, Ok, dripValve, reset, activePulse;
+bool dripValve, activePulse;
 bool dhtOk, dhtOkCheck, checkTimer, dripActived = false;
 /* Pulse Variables */
 const unsigned long pulseTime = 50; // Duración del pulso en milisegundos = 50ms
 unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
-
 void setup() {
   Serial.begin(9600);
   /* Inicio preferences */
@@ -253,7 +245,7 @@ void setup() {
   /* Mail semanal de comprobación de humedades */
   mailMonthlyData.sender.name = "Smart Drip System";
   mailMonthlyData.sender.email = AUTHOR_EMAIL;
-  mailMonthlyData.subject = "Mail semanal de humedades";
+  mailMonthlyData.subject = "Mail mensual de humedades";
   mailMonthlyData.addRecipient("Pablo", "falder24@gmail.com"); 
   stopPulse();
   getCalibrateHigroData();
@@ -488,7 +480,6 @@ int calibrateHigro(const char* fase, int minRange, int maxRange) {
     Serial.println(" fuera del rango esperado.");
     return -1;  // Indica que la calibración falló
   }
-
   return valor;  // Retorna el valor calibrado si es válido
 }
 /* Check Calibration */
@@ -543,7 +534,7 @@ void getHigroValues(){
     }
   }
   Serial.print("Substrate humidity: "); 
-  Serial.println(substrateHumidity + "%"); 
+  Serial.println(String(substrateHumidity) + "%"); 
 }
 /* Getting DHT Measurements */
 void getDHTValues(){
@@ -745,18 +736,23 @@ void handleWiFiReconnection() {
 void NTPsincro(){
   configTime(gmtOFFset_sec, daylightOffset_sec, ntpServer);
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {  // Obtener la hora local
-    Serial.println("Error al obtener la hora");
-    return;
+  int attempts = 0;
+  const int maxAttempts = 5; // Número máximo de reintentos
+  while (attempts < maxAttempts) {
+    if (getLocalTime(&timeinfo)) {
+        Serial.println("Hora sincronizada con NTP:");     // Mostrar la fecha y hora formateada
+        Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");   
+        rtc.setTimeStruct(timeinfo);                      // Establecer el RTC con la estructura de tiempo obtenida
+        nowTime = rtc.getTime();
+        date = rtc.getDate();
+        return;
+    }
+    Serial.println("Error al sincronizar con NTP. Reintentando...");
+    attempts++;
+    delay(2000); // Espera 2 segundos antes de intentar nuevamente
   }
-  Serial.println("Hora sincronizada con NTP:");
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");  // Mostrar la fecha y hora formateada
-  // Sincronizar el RTC del ESP32 con la hora local
-  rtc.setTimeStruct(timeinfo);  // Establecer el RTC con la estructura de tiempo obtenida
-  Serial.print("Hora configurada en RTC: ");
+  Serial.println("Error: No se pudo sincronizar con NTP tras varios intentos."); 
   Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
-  nowTime = rtc.getTime();
-  date = rtc.getDate();
 }
 /* Storage Data Sensors */
 void storeDailyData(int currentDay, int currentHour, int currentMinute){
@@ -1026,7 +1022,6 @@ void smtpCallback(SMTP_Status status){
       SMTP_Result result = smtp.sendingResult.getItem(i);
       time_t ts = (time_t)result.timestamp;
       localtime_r(&ts, &dt);
-
       ESP_MAIL_PRINTF("Message No: %d\n", i + 1);
       ESP_MAIL_PRINTF("Status: %s\n", result.completed ? "success" : "failed");
       ESP_MAIL_PRINTF("Date/Time: %d/%d/%d %d:%d:%d\n", dt.tm_year + 1900, dt.tm_mon + 1, dt.tm_mday, dt.tm_hour, dt.tm_min, dt.tm_sec);
