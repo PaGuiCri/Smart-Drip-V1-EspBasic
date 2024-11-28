@@ -67,6 +67,7 @@ bool mailStartSystemActive = true;
 bool mailActiveScheduleActive = true;
 bool mailNoActiveScheduleActive = true;
 bool mailSmartDripOnActive = true;
+String errorMail, showErrorMail, errorMailConnect, showErrorMailConnect = "";
 /* Timers */
 volatile bool toggle = true;
 void IRAM_ATTR onTimer1();
@@ -99,11 +100,11 @@ void storeDripData(int currentDay, int currentHour, int currentMinute, bool drip
 String monthlyMessage();
 void cleanData();   
 void createID();
-/* Sincronización del RTC con NTP */
+/* NTP server config */
 const char* ntpServer = "pool.ntp.org";
 const long gmtOFFset_sec = 3600;
 const int daylightOffset_sec = 3600;
-/* Configuración de terminales para higrómetro y DHT11  */
+/* Terminal configuration for hygrometer and DHT11 */
 void getDHTValues();     // Método para obtener los valores del sensor DHT11
 void getHigroValues();   // Método para obtener los valores del sensor higrómetro
 void getCalibrateHigroData();    // Método para recuperar los valores almacenados de la calibración del sensor higrómetro
@@ -130,7 +131,7 @@ int dripTime, dripTimeCheck = 0;
 int dripHumidity, dripHumidityCheck = 0;
 int dripTimeLimit = 5;
 int dripHumidityLimit = 45;  
-/* Variables para el cálculo del caudal */
+/* Variables for flow calculation */
 volatile int pulses = 0;
 float caudal = 0.0;
 float waterVolume = 0.0; // *** redefinir variables de caudal de agua
@@ -138,7 +139,6 @@ float totalLitros = 0.0;
 unsigned long oldTime = 0;
 bool flowMeterEstatus = false;
 bool flowSensorEnabled = false;  // Habilita o deshabilita el sensor de flujo de caudal
-/* Interrupción llamada cada vez que se detecta un pulso del sensor */
 void flowMeter();
 void pulseCounter(){
   pulses++;
@@ -146,7 +146,7 @@ void pulseCounter(){
 /* Checking Active Schedule */
 bool withinSchedule = false;
 bool isWithinSchedule(int currentHour, int currentMinute);
-/* Instancia para almacenar datos de riego en memoria flash */
+/* Instance to store in flash memory */
 Preferences preferences;
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
@@ -156,7 +156,6 @@ const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 #define dripValveVin2 25  // Segunda válvula opcional
 #define dripValveGND2 33  // Segunda válvula opcional
 #define flowSensor  13    // Nueva configuración de pines antes 20 pendiente test pin 13
-#define pinLed 2          // pin para señal luminosa desde la caja
 bool dripValve, activePulse;
 bool dhtOk, dhtOkCheck, checkTimer, dripActived = false;
 /* Pulse Variables */
@@ -165,7 +164,7 @@ unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
 void setup() {
   Serial.begin(9600);
-  /* Inicio preferences */
+  /* Start preferences */
   preferences.begin("sensor_data", false);
   idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
   /* Creación de ID único */
@@ -173,6 +172,12 @@ void setup() {
   Serial.print("ID único CRC32: ");
   Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
   idSDHex += String(idNumber, HEX);
+  showErrorMail = preferences.getString("lastMailError", " No mail errors " );
+  showErrorMailConnect = preferences.getString("errorSMTPServer", " No SMTP connect error ");
+  Serial.print("Error conectando con el servidor SMTP almacenado: ");
+  Serial.println(showErrorMailConnect);
+  Serial.print("Error enviando mails almacenado: ");
+  Serial.println(showErrorMail);
   /* Inicio conexión WiFi */
   InitWiFi();
   Serial.print("Time: ");
@@ -185,7 +190,6 @@ void setup() {
   pinMode(dripValveGND1, OUTPUT);
   digitalWrite(dripValveGND1, LOW);
   pinMode(flowSensor, INPUT);
-  pinMode(pinLed, OUTPUT);
   /* Configuración de la interrupción para detectar los pulsos del sensor de flujo */
   attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
   /* Temporizador */
@@ -195,8 +199,8 @@ void setup() {
   timerAlarmEnable(timer1);
   timerAlarmDisable(timer1);
   /* Configuración de emails */
-  smtp.debug(1);
-  smtp.callback(smtpCallback);
+  //smtp.debug(1);
+  //smtp.callback(smtpCallback);
   session.server.host_name = SMTP_HOST;
   session.server.port = SMTP_PORT;
   session.login.email = AUTHOR_EMAIL;
@@ -285,6 +289,10 @@ void loop() {
   Serial.println(dripTime);
   Serial.print("Drip humidity: ");
   Serial.println(dripHumidity);
+  Serial.print("Error conectando con el servidor smtp almacenado: ");
+  Serial.println(showErrorMailConnect);
+  Serial.print("Error enviando mails almacenado: ");
+  Serial.println(showErrorMail);
   if (withinSchedule) {   // Si estamos dentro del horario de riego
     /* Manejar el proceso de riego cuando estamos dentro del horario programado */
     handleDrip();    
@@ -633,23 +641,16 @@ void stopPulse(){
 }
 /* Flow meter */
 void flowMeter(){
-  /* Cálculo del caudal cada segundo */
-  if ((millis() - oldTime) > 1000){
-    /* Desactiva las interrupciones mientras se realiza el cálculo */
-    detachInterrupt(digitalPinToInterrupt(flowSensor));
+  if ((millis() - oldTime) > 1000){                // Cálculo del caudal cada segundo
+    detachInterrupt(digitalPinToInterrupt(flowSensor));    // Desactiva las interrupciones mientras se realiza el cálculo
     Serial.print("Pulsos: ");
     Serial.println(pulses);
-    /* Calcula el caudal en litros por minuto */
+    /* Calculates the flow rate in liters per minute */
     caudal = pulses / 5.5;                         // factor de conversión, siendo K=7.5 para el sensor de ½”, K=5.5 para el sensor de ¾” y 3.5 para el sensor de 1”
-    // Reinicia el contador de pulsos
-    pulses = 0;
-    // Calcula el volumen de agua en mililitros
-    waterVolume = (caudal / 60) * 1000/1000;
-    // Incrementa el volumen total acumulado
-    totalLitros += waterVolume;
-    // Activa las interrupciones nuevamente
+    pulses = 0;                                    // Reinicia el contador de pulsos
+    waterVolume = (caudal / 60) * 1000/1000;       // Calcula el volumen de agua en mililitros
+    totalLitros += waterVolume;                    // Incrementa el volumen total acumulado
     attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
-    // Actualiza el tiempo anterior
     oldTime = millis();
     float caudalRiego = caudal;
     float caudalTotal = totalLitros; 
@@ -688,10 +689,9 @@ void InitWiFi() {
   int tries = 0;
   state = WiFi.status();
   unsigned long initTime = millis();
-  const unsigned long interval = 5000;  // 5 segundos
+  const unsigned long interval = 5000;   // 5 segundos
   const unsigned long waitTime = 15000;  // 15 segundos para dar tiempo al WiFi
-  // Continuar mientras no esté conectado y no se hayan agotado los intentos
-  while (state != WL_CONNECTED && tries < MAX_CONNECT) {
+  while (state != WL_CONNECTED && tries < MAX_CONNECT) {      // Continuar mientras no esté conectado y no se hayan agotado los intentos
     currentMillis = millis();
     // Verificar si han pasado 5 segundos
     if (currentMillis - initTime >= interval) {
@@ -699,8 +699,7 @@ void InitWiFi() {
       Serial.print("Intento de conectar a la red WiFi: " + String(SSID) + " ");
       Serial.print(tries + 1);
       Serial.println(" de conexión...");
-      // Verificar si el tiempo de espera total ha pasado para intentar reconectar
-      if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {
+      if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {   // Verificar si el tiempo de espera total ha pasado para intentar reconectar
         WiFi.reconnect();
         initTime = millis(); // Reiniciar el temporizador solo después de reconectar
       }else{
@@ -711,8 +710,7 @@ void InitWiFi() {
     }
     // Aquí puedes ejecutar otras tareas mientras esperas
   }
-  // Verificar si la conexión fue exitosa
-  if (state == WL_CONNECTED) {
+  if (state == WL_CONNECTED) {      // Verificar si la conexión fue exitosa
     Serial.println("\n\nConexión exitosa!!!");
     Serial.print("Tu IP es: ");
     Serial.println(WiFi.localIP());
@@ -724,7 +722,7 @@ void InitWiFi() {
 /* Check WiFi Reconnection */
 void handleWiFiReconnection() {
   if (millis() - lastConnectionTry >= tryInterval) {  // Comprobación de la conexión de la red WiFi cada hora
-    lastConnectionTry = millis();   // Actualizar el tiempo del último chequeo
+    lastConnectionTry = millis();                     // Actualizar el tiempo del último chequeo
     if(WiFi.status() != WL_CONNECTED){
       Serial.println("Conexión WiFi perdida. Intentando reconectar...");
       InitWiFi();
@@ -737,7 +735,7 @@ void NTPsincro(){
   configTime(gmtOFFset_sec, daylightOffset_sec, ntpServer);
   struct tm timeinfo;
   int attempts = 0;
-  const int maxAttempts = 5; // Número máximo de reintentos
+  const int maxAttempts = 5;                              // Número máximo de reintentos
   while (attempts < maxAttempts) {
     if (getLocalTime(&timeinfo)) {
         Serial.println("Hora sincronizada con NTP:");     // Mostrar la fecha y hora formateada
@@ -749,7 +747,7 @@ void NTPsincro(){
     }
     Serial.println("Error al sincronizar con NTP. Reintentando...");
     attempts++;
-    delay(2000); // Espera 2 segundos antes de intentar nuevamente
+    delay(2000);
   }
   Serial.println("Error: No se pudo sincronizar con NTP tras varios intentos."); 
   Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
@@ -852,9 +850,20 @@ void mailStartSystem(){
   mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
     return;
   if(!MailClient.sendMail(&smtp, &mailStartSDS)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -881,9 +890,20 @@ void mailActiveSchedule(){
   mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: \n" + errorMailConnect);
     return;
   if(!MailClient.sendMail(&smtp, &mailActivSchedule)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -911,9 +931,20 @@ void mailNoActiveSchedule(){
   mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -936,9 +967,20 @@ void mailSmartDripOn(){
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailDripOn)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -958,9 +1000,20 @@ void mailErrorValve(){
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailErrValve)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -978,9 +1031,20 @@ void mailErrorDHT11(){
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -999,9 +1063,20 @@ void mailErrorSensorHigro(){
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1034,6 +1109,7 @@ void smtpCallback(SMTP_Status status){
 /* Mail Monthly Data */
 void mailMonthData(String message){
   date = rtc.getDate();
+  nowTime = rtc.getHour();
   String textMsg = idSDHex + " \n" + idUser + " \n"
                    " Mensaje mensual de comprobación de humedades del sustrato del Smart Drip " + idSmartDrip + " \n" 
                    + " con fecha " + String(date) + " los datos son: " + " \n"
@@ -1043,9 +1119,20 @@ void mailMonthData(String message){
   mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session))
-    return;
+    errorMailConnect = String(date) +"\n"
+                       + String(nowTime) + "\n"
+                       + " El sistema reporta el siguiente error: \n " 
+                       + smtp.errorReason();    
+    preferences.putString("errorSMTPServer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: " + errorMailConnect);
+    return;  
   if(!MailClient.sendMail(&smtp, &mailMonthlyData)){
-    Serial.println("Error envío Email, " + smtp.errorReason());
+    errorMail = String(date) +"\n"
+                + String(nowTime) + "\n"
+                + " El sistema reporta el siguiente error: \n " 
+                + smtp.errorReason();    
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: " + errorMail);
   }else{
     Serial.println("Correo enviado con exito");
   }
