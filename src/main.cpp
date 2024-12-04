@@ -537,7 +537,8 @@ void getHigroValues(){
   substrateHumidity = map(higroValue, wet, dry, 100, 0);
   if(higroValue < wet || higroValue > dry){
     Serial.println("ADVERTENCIA: El sensor está fuera del rango calibrado. Recalibración recomendada.");
-    if(!mailErrorDHTSended){
+    if(!mailErrorHigroSended){
+      Serial.println(" Mail error en sensor de humedad enviado ");
       mailErrorSensorHigro();
     }
   }
