@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SimpleDHT.h>
 #include <NTPClient.h>
+#include <SPIFFS.h>
 #include <Preferences.h>
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
@@ -169,7 +170,14 @@ unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
 void setup() {
   Serial.begin(9600);
-  /* Start preferences */
+   if (!SPIFFS.begin(true)) {
+        Serial.println("No se pudo montar SPIFFS, se requiere formateo.");
+    } else {
+        Serial.println("SPIFFS montado correctamente.");
+        Serial.printf("Tamaño total: %u bytes\n", SPIFFS.totalBytes());
+        Serial.printf("Espacio usado: %u bytes\n", SPIFFS.usedBytes());
+    }
+    /* Start preferences */
   preferences.begin("sensor_data", false);
   idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
   /* Creación de ID único */
@@ -179,10 +187,10 @@ void setup() {
   idSDHex += String(idNumber, HEX);
   showErrorMail = preferences.getString("lastMailError", " No mail errors " );
   showErrorMailConnect = preferences.getString("errorSMTPServer", " No SMTP connect error ");
-  Serial.print("Error conectando con el servidor SMTP almacenado: ");
-  Serial.println(showErrorMailConnect);
   Serial.print("Error enviando mails almacenado: ");
   Serial.println(showErrorMail);
+  Serial.print("Error conectando con el servidor SMTP almacenado: ");
+  Serial.println(showErrorMailConnect);
   /* Inicio conexión WiFi */
   InitWiFi();
   Serial.print("Time: ");
