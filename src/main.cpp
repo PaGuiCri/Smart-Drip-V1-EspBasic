@@ -40,14 +40,14 @@ uint32_t crc32(const uint8_t *data, size_t length) {
 #define AUTHOR_PASSWORD "kcjbfgngmfgkcxtw"
 SMTPSession smtp;
 void smtpCallback(SMTP_Status status);
-void mailSmartDripOn();                // mail proceso de riego iniciado
-void mailStartSystem();                // mail inicio sistema
-void mailErrorValve();                 // mail error en electroválvula
-void mailErrorDHT11();                 // mail error en sensor DHT11
-void mailErrorSensorHigro();           // mail error en sensor higrometro
-void mailActiveSchedule();             // mail horario de riego activo
-void mailNoActiveSchedule();           // mail horario de riego no activo
-void mailMonthData(String message);    // mail datos de riego mensual
+void mailSmartDripOn();                     // mail proceso de riego iniciado
+void mailStartSystem();                     // mail inicio sistema
+void mailErrorValve();                      // mail error en electroválvula
+void mailErrorDHT11();                      // mail error en sensor DHT11
+void mailErrorSensorHigro();                // mail error en sensor higrometro
+void mailActiveSchedule(String message);    // mail horario de riego activo
+void mailNoActiveSchedule();                // mail horario de riego no activo
+void mailMonthData(String message);         // mail datos de riego mensual
 void mailCalibrateSensor();
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
@@ -112,10 +112,10 @@ const int daylightOffset_sec = 3600;
 /* Terminal configuration for hygrometer and DHT11 */
 void getDHTValues();     // Método para obtener los valores del sensor DHT11
 void getHigroValues();   // Método para obtener los valores del sensor higrómetro
-void getCalibrateHigroData();    // Método para recuperar los valores almacenados de la calibración del sensor higrómetro
-int calibrateHigro(const char* fase, int minRange, int maxRange);   // Método para calibrar el sensor higrómetro según fase requerida
-void startCalibration();   // Método para iniciar la calibración del sensor higrómetro
-bool calibrationOk();     // Método para comprobar que la calibración ha sido correcta
+//void getCalibrateHigroData();    // Método para recuperar los valores almacenados de la calibración del sensor higrómetro
+//int calibrateHigro(const char* fase, int minRange, int maxRange);   // Método para calibrar el sensor higrómetro según fase requerida
+//void startCalibration();   // Método para iniciar la calibración del sensor higrómetro
+//bool calibrationOk();     // Método para comprobar que la calibración ha sido correcta
 void handleDrip();     // Método para el manejo de los procesos de riego
 void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
 void finalizeDrip();   // Método para el manejo de la finalización del proceso de riego
@@ -129,9 +129,9 @@ int higroValue, dryValue, wetValue = 0;
 int substrateHumidity = 0;
 int counter = 0;
 bool outputEstatus = false;
-//const int dry = 445;
-//const int wet = 2;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
-int dry, wet = 0;            // Variables para almacenar los valores límites del sensor higrómetro
+const int dry = 460;
+const int wet = 0;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
+//int dry, wet = 0;            // Variables para almacenar los valores límites del sensor higrómetro
 int dripTime, dripTimeCheck = 0;
 int dripHumidity, dripHumidityCheck = 0;
 int dripTimeLimit = 5;
@@ -186,7 +186,7 @@ void setup() {
   Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
   idSDHex += String(idNumber, HEX);
   showErrorMail = preferences.getString("lastMailError", " No mail errors " );
-  showErrorMailConnect = preferences.getString("errorSMTPServer", " No SMTP connect error ");
+  showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
   Serial.print("Error enviando mails almacenado: ");
   Serial.println(showErrorMail);
   Serial.print("Error conectando con el servidor SMTP almacenado: ");
@@ -270,7 +270,7 @@ void setup() {
   mailCalibratSensor.subject = " Proceso de calibración iniciado";
   mailCalibratSensor.addRecipient("Pablo", "falder24@gmail.com");
   stopPulse();
-  getCalibrateHigroData();
+  //getCalibrateHigroData();
   getHigroValues();
   if(mailStartSystemActive){
     mailStartSystem();
@@ -370,7 +370,9 @@ void handleDrip() {
   mailNoActiveScheduleCheck = false;
   Serial.println("Active irrigation schedule");
   if (!mailActiveScheduleCheck && mailActiveScheduleActive) {  
-    mailActiveSchedule();  // Envío mail horario de riego activo - desactivado
+    dataMonthlyMessage = monthlyMessage();
+    Serial.println("dataMonthlyMessage");
+    mailActiveSchedule(dataMonthlyMessage);  // Envío mail horario de riego activo - desactivado
   }
   if (substrateHumidity > dripHumidity) {
     if (!checkTimer) {
@@ -445,10 +447,10 @@ void finalizeDrip() {
   }
 }
 /* Get Higro Sensor Data */
-void getCalibrateHigroData(){
+/*void getCalibrateHigroData(){
   if (preferences.isKey("dryValue") && preferences.isKey("wetValue")) {
-    dry = dryValue = preferences.getInt("dryValue");
-    wet = wetValue = preferences.getInt("wetValue");
+    //dry = dryValue = preferences.getInt("dryValue");
+    //wet = wetValue = preferences.getInt("wetValue");
     Serial.println("Valores de calibración cargados desde memoria:");
     Serial.print("Valor Seco (0%): ");
     Serial.println(dry);
@@ -465,9 +467,9 @@ void getCalibrateHigroData(){
     Serial.println("No se encontraron valores de calibración. Iniciando calibración...");
     startCalibration();
   }
-}
+}*/
 /* Calibrate Higro Process */
-int calibrateHigro(const char* fase, int minRange, int maxRange) {
+/*int calibrateHigro(const char* fase, int minRange, int maxRange) {
   Serial.println("Proceso de calibración del sensor de humedad iniciado. Siga las siguientes indicaciones: \n");
   if (strcmp(fase, "aire") == 0) {
     Serial.print("Por favor, asegúrese de que el sensor no está en contacto con ninguna sustancia húmeda, \n");
@@ -511,22 +513,22 @@ int calibrateHigro(const char* fase, int minRange, int maxRange) {
     return -1;  // Indica que la calibración falló
   }
   return valor;  // Retorna el valor calibrado si es válido
-}
+}*/
 /* Check Calibration */
-bool calibrationOk() {
+/*bool calibrationOk() {
   if (dryValue < 400 || dryValue > 500) {
     return false;
   }
-  if (wetValue < 0 || wetValue > 100) {
+  if (wetValue < 1 || wetValue > 100) {
     return false;
   }
   if (dryValue <= wetValue) {
     return false;
   }
   return true;
-}
+}*/
 /* Start Calibration Phases */
-void startCalibration() {
+/*void startCalibration() {
   if(!mailCalibrateSensorSended){
     mailCalibrateSensor();
   }
@@ -555,18 +557,18 @@ void startCalibration() {
   Serial.print("Valor en agua (100% humedad): ");
   Serial.println(storedWetValue);
   mailErrorHigroSended = false;      // Resetear el flag de error de envío de email
-}
+}*/
 /* Getting Higro Measurements */
 void getHigroValues(){
   higroValue = analogRead(PinHigro);
   substrateHumidity = map(higroValue, wet, dry, 100, 0);
-  if(higroValue < wet || higroValue > dry){
+  /*if(higroValue < wet || higroValue > dry){
     Serial.println("ADVERTENCIA: El sensor está fuera del rango calibrado. Recalibración recomendada.");
     if(!mailErrorHigroSended){
       Serial.println(" Mail error en sensor de humedad enviado ");
       mailErrorSensorHigro();
     }
-  }
+  }*/
   Serial.print("Valor leido en el sensor de humedad: ");
   Serial.println(higroValue);
   Serial.print("Valor humedad máxima: ");
@@ -894,14 +896,15 @@ void mailStartSystem(){
   mailStartSDS.text.charSet = "us-ascii";
   mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: ");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailStartSDS)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -916,21 +919,22 @@ void mailStartSystem(){
   smtp.closeSession();
 }
 /* Mail Active Schedule */
-void mailActiveSchedule(){
+void mailActiveSchedule(String message){
   nowTime = rtc.getTime();
   date = rtc.getDate();
   snprintf(textMsg, sizeof(textMsg),
            "%s \n%s \n"
            "SmartDrip%s: inicia horario activo de riego. \n"
            "RTC: con fecha: %s\n"
-           "      hora: %s\n"
+           "        hora: %s\n"
            "Datos de configuración guardados: \n"
            "Tiempo de riego: %d min. \n"
            "Límite de humedad de riego: %d%% \n"
            "Horario de activación de riego: \n"
            "Hora de inicio: %s\n"
            "Hora de fin: %s\n"
-           "Humedad sustrato: %d%% \n",
+           "Humedad sustrato: %d%% \n"
+           "Datos almacenados de días anteriores del mes: %s\n",
            idSDHex.c_str(),                // ID del SD en formato string
            idUser.c_str(),                 // ID del usuario
            idSmartDrip.c_str(),            // ID del dispositivo SmartDrip
@@ -940,20 +944,22 @@ void mailActiveSchedule(){
            dripHumidity,                   // Límite de humedad para riego
            startTime.c_str(),              // Hora de inicio de riego
            endTime.c_str(),                // Hora de fin de riego
-           substrateHumidity);             // Humedad del sustrato
+           substrateHumidity,              // Humedad del sustrato
+           message.c_str());               // Datos almacenados de días anteriores del mes
   finalMessage = String(textMsg);
   mailActivSchedule.text.content = finalMessage.c_str();
   mailActivSchedule.text.charSet = "us-ascii";
   mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailActivSchedule)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -999,14 +1005,15 @@ void mailNoActiveSchedule(){
   mailNoActivSchedule.text.charSet = "us-ascii";
   mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1045,14 +1052,15 @@ void mailSmartDripOn(){
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailDripOn)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1083,14 +1091,15 @@ void mailErrorValve(){
   mailErrValve.text.charSet = "us-ascii";
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailErrValve)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1119,14 +1128,15 @@ void mailErrorDHT11(){
   mailErrorDHT.text.charSet = "us-ascii";
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1156,14 +1166,15 @@ void mailErrorSensorHigro(){
   mailErrorHigro.text.charSet = "us-ascii";
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1192,14 +1203,15 @@ void mailCalibrateSensor(){
   mailCalibratSensor.text.charSet = "us-ascii";
   mailCalibratSensor.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailCalibratSensor.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailCalibratSensor)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
@@ -1255,14 +1267,15 @@ void mailMonthData(String message){
   mailMonthlyData.text.charSet = "us-ascii";
   mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session))
+  if(!smtp.connect(&session)){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
-    preferences.putString("errorSMTPServer", errorMailConnect);
+    preferences.putString("erSMTPSer", errorMailConnect);
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
+  }
   if(!MailClient.sendMail(&smtp, &mailMonthlyData)){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
