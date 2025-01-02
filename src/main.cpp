@@ -6,6 +6,7 @@
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
 #include <HTTPClient.h>
+#include <esp_heap_caps.h> // Biblioteca para obtener detalles de la memoria
 /* WiFi */
 //#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
 //#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
@@ -46,7 +47,7 @@ void mailErrorValve();                      // mail error en electroválvula
 void mailErrorDHT11();                      // mail error en sensor DHT11
 void mailErrorSensorHigro();                // mail error en sensor higrometro
 void mailActiveSchedule(String message);    // mail horario de riego activo
-void mailNoActiveSchedule();                // mail horario de riego no activo
+void mailNoActiveSchedule(String message);  // mail horario de riego no activo
 void mailMonthData(String message);         // mail datos de riego mensual
 void mailCalibrateSensor();
 ESP_Mail_Session session;
@@ -95,13 +96,15 @@ String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
 int currentHour, currentMinute, currentDay, lastDay, lastDrip, lastDayDrip, counterDripDays;
-int emailSendDay = 15;  // Día del mes en que se enviará el correo
+int emailSendDay = 1;  // Día del mes en que se enviará el correo
 int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
 void checkAndSendEmail();
 void storeDailyData(int currentDay,int currentHour, int currentMinute);
 void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive);
+void verifyStoredData(int day);
+void showMemoryStatus();
 String monthlyMessage();
 void cleanData();   
 void createID();
@@ -112,10 +115,6 @@ const int daylightOffset_sec = 3600;
 /* Terminal configuration for hygrometer and DHT11 */
 void getDHTValues();     // Método para obtener los valores del sensor DHT11
 void getHigroValues();   // Método para obtener los valores del sensor higrómetro
-//void getCalibrateHigroData();    // Método para recuperar los valores almacenados de la calibración del sensor higrómetro
-//int calibrateHigro(const char* fase, int minRange, int maxRange);   // Método para calibrar el sensor higrómetro según fase requerida
-//void startCalibration();   // Método para iniciar la calibración del sensor higrómetro
-//bool calibrationOk();     // Método para comprobar que la calibración ha sido correcta
 void handleDrip();     // Método para el manejo de los procesos de riego
 void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
 void finalizeDrip();   // Método para el manejo de la finalización del proceso de riego
@@ -291,8 +290,6 @@ void loop() {
   /* Comprobar si el temporizador de riego está habilitado */
   checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;  // Actualizar el estado de la activación del riego
-  Serial.print("Timer ON: ");
-  Serial.println(checkTimer);
   if (!checkTimer) {    // Si el temporizador no está habilitado, reiniciar los valores predeterminados de riego
     dripTime = dripTimeLimit;
     dripTimeCheck = dripTimeLimit;
@@ -307,9 +304,9 @@ void loop() {
   Serial.println(dripTime);
   Serial.print("Drip humidity: ");
   Serial.println(dripHumidity);
-  Serial.print("Error conectando con el servidor smtp almacenado: ");
+  Serial.print("Log Error conectando con el servidor smtp almacenado: ");
   Serial.println(showErrorMailConnect);
-  Serial.print("Error enviando mails almacenado: ");
+  Serial.print("Log Error enviando mails almacenado: ");
   Serial.println(showErrorMail);
   if (withinSchedule) {   // Si estamos dentro del horario de riego
     /* Manejar el proceso de riego cuando estamos dentro del horario programado */
@@ -371,7 +368,7 @@ void handleDrip() {
   Serial.println("Active irrigation schedule");
   if (!mailActiveScheduleCheck && mailActiveScheduleActive) {  
     dataMonthlyMessage = monthlyMessage();
-    Serial.println("dataMonthlyMessage");
+    Serial.println(dataMonthlyMessage);
     mailActiveSchedule(dataMonthlyMessage);  // Envío mail horario de riego activo - desactivado
   }
   if (substrateHumidity > dripHumidity) {
@@ -421,7 +418,9 @@ void handleOutOfScheduleDrip() {
   Serial.println(caudal);
   mailActiveScheduleCheck = false;
   if (!mailNoActiveScheduleCheck && mailNoActiveScheduleActive) {
-    mailNoActiveSchedule();
+    dataMonthlyMessage = monthlyMessage();
+    Serial.println(dataMonthlyMessage);
+    mailNoActiveSchedule(dataMonthlyMessage);
   }
   if (!dripValve && caudal != 0) {
     if (closeValveCounter != 0) {
@@ -446,118 +445,6 @@ void finalizeDrip() {
     }
   }
 }
-/* Get Higro Sensor Data */
-/*void getCalibrateHigroData(){
-  if (preferences.isKey("dryValue") && preferences.isKey("wetValue")) {
-    //dry = dryValue = preferences.getInt("dryValue");
-    //wet = wetValue = preferences.getInt("wetValue");
-    Serial.println("Valores de calibración cargados desde memoria:");
-    Serial.print("Valor Seco (0%): ");
-    Serial.println(dry);
-    Serial.print("Valor Húmedo (100%): ");
-    Serial.println(wet);
-    if (calibrationOk()) {
-      Serial.println("Calibración válida.");
-       mailCalibrateSensorSended = false;
-    } else {
-      Serial.println("ERROR: Calibración inválida. Iniciando recalibración...");
-      startCalibration();
-    }
-  } else {
-    Serial.println("No se encontraron valores de calibración. Iniciando calibración...");
-    startCalibration();
-  }
-}*/
-/* Calibrate Higro Process */
-/*int calibrateHigro(const char* fase, int minRange, int maxRange) {
-  Serial.println("Proceso de calibración del sensor de humedad iniciado. Siga las siguientes indicaciones: \n");
-  if (strcmp(fase, "aire") == 0) {
-    Serial.print("Por favor, asegúrese de que el sensor no está en contacto con ninguna sustancia húmeda, \n");
-    Serial.println("deje el sensor en el aire y espere 10 segundos.");
-  } else {
-    Serial.println("introduzca el sensor en agua y espere 10 segundos.");
-  }
-  Serial.println("La calibración empezará en: ");
-  for(int i = 10; i > 0; i--){ 
-    Serial.print("Tiempo: ");  // Espera 10 segundos para que el usuario coloque el sensor en el aire
-    Serial.print(i);
-    Serial.println("s.");
-    delay(1000);
-  }
-  int valor = (strcmp(fase, "aire") == 0) ? 4095 : 0;  // Inicialización según la fase
-    Serial.println("Iniciando lecturas...");
-  for (int i = 0; i < 5; i++) {
-    int lectura = analogRead(PinHigro);
-    if (strcmp(fase, "aire") == 0) {
-      if (lectura < valor) {
-        valor = lectura;  // Busca el mínimo en aire
-      }
-    } else {
-      if (lectura > valor) {
-        valor = lectura;  // Busca el máximo en agua
-      }
-    }
-    Serial.print("Lectura ");
-    Serial.print(String(i + 1));
-    Serial.print(": ");
-    Serial.println(lectura);
-    delay(2000);  // Espera de 2 segundos entre lecturas
-  }
-  Serial.print("Calibración en ");
-  Serial.print(fase);
-  Serial.println(" completada. Valor: " + valor);
-  if (valor < minRange || valor > maxRange) {
-    Serial.print("ERROR: Valor de ");
-    Serial.print(fase);
-    Serial.println(" fuera del rango esperado.");
-    return -1;  // Indica que la calibración falló
-  }
-  return valor;  // Retorna el valor calibrado si es válido
-}*/
-/* Check Calibration */
-/*bool calibrationOk() {
-  if (dryValue < 400 || dryValue > 500) {
-    return false;
-  }
-  if (wetValue < 1 || wetValue > 100) {
-    return false;
-  }
-  if (dryValue <= wetValue) {
-    return false;
-  }
-  return true;
-}*/
-/* Start Calibration Phases */
-/*void startCalibration() {
-  if(!mailCalibrateSensorSended){
-    mailCalibrateSensor();
-  }
-  dryValue = calibrateHigro("aire", 400, 500);
-  if (dryValue == -1) {
-    Serial.println("ERROR: Calibración en aire fallida. Repita el proceso.");
-    startCalibration();
-    return;
-  }
-  wetValue = calibrateHigro("agua", 1, 100);
-  if (wetValue == -1 || dryValue <= wetValue) {
-    Serial.println("ERROR: Calibración en agua fallida o inconsistente. Repita el proceso.");
-    startCalibration();
-    return;
-  }
-  preferences.putInt("dryValue", dryValue);
-  preferences.putInt("wetValue", wetValue);
-  Serial.println("Calibración completada y válida.");
-  Serial.println("Valores almacenados en memoria");
-  // Imprimir los valores almacenados para verificación
-  int storedDryValue = preferences.getInt("dryValue");
-  int storedWetValue = preferences.getInt("wetValue");
-  Serial.println("Verificación de valores almacenados:");
-  Serial.print("Valor en aire (0% humedad): ");
-  Serial.println(storedDryValue);
-  Serial.print("Valor en agua (100% humedad): ");
-  Serial.println(storedWetValue);
-  mailErrorHigroSended = false;      // Resetear el flag de error de envío de email
-}*/
 /* Getting Higro Measurements */
 void getHigroValues(){
   higroValue = analogRead(PinHigro);
@@ -788,47 +675,125 @@ void NTPsincro(){
   Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
 }
 /* Storage Data Sensors */
-void storeDailyData(int currentDay, int currentHour, int currentMinute){
-  if (currentDay != lastDay && currentHour == endHour && currentMinute == endMinute) {  // Comprueba si el último día de guardado es diferente al día actual y si estamos finalizando el horario activo de riego
-    getHigroValues();
-    getDHTValues();
-    Serial.println("Nuevo día detectado, almacenando datos...");      
-    // Guarda los datos en la memoria no volátil
-    sprintf(key, "Higro_day%d", currentDay);
-    preferences.putInt(key, substrateHumidity);
-    if(dhtOk){
-      sprintf(key, "Humedad_day%d", currentDay);
-      preferences.putInt(key, humidity);
-      sprintf(key, "Temp_day%d", currentDay);
-      preferences.putInt(key, temp);
+void storeDailyData(int currentDay, int currentHour, int currentMinute) {
+  Serial.println("Comprobando si es necesario almacenar datos...");
+  showMemoryStatus();
+  // Verificamos si la hora actual es posterior a la hora de guardado
+  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {
+    // Si el día actual es diferente al último día guardado, comprobamos si los datos ya están almacenados
+    Serial.println("Comprobando si el día actual es diferente al último día de almacenamiento...");
+    if (currentDay != lastDay) {
+      Serial.println("Comprobando si hay datos guardados para el día actual...");
+      // Comprobamos si los datos ya están guardados para el día actual
+      sprintf(key, "Higro_day%d", currentDay);
+      int storedHigro = preferences.getInt(key, -1); // -1 indica que el dato no existe
+      if (storedHigro == -1) {  // Si no hay datos almacenados, almacenamos los datos ahora
+        Serial.println("Almacenando datos para el día actual...");
+        getHigroValues();
+        getDHTValues();
+        // Guardamos los datos en la memoria no volátil
+        sprintf(key, "Higro_day%d", currentDay);
+        preferences.putInt(key, substrateHumidity);
+        if (dhtOk) {
+          sprintf(key, "Humedad_day%d", currentDay);
+          preferences.putInt(key, humidity);
+          sprintf(key, "Temp_day%d", currentDay);
+          preferences.putInt(key, temp);
+        }
+        lastDay = currentDay;
+        Serial.print("Datos guardados para el día ");
+        Serial.println(currentDay);
+        verifyStoredData(currentDay);
+      } else {
+        Serial.print("Los datos ya están almacenados para el día ");
+        Serial.println(currentDay);
+        verifyStoredData(currentDay);
+      }
     }
-    lastDay = currentDay;
-    Serial.print("Datos guardados para el día ");
-    Serial.println(date);
-  }else{
-    Serial.print("Los datos para el día ");
-    Serial.print(date);
-    Serial.println(" ya han sido guardados.");
-    dripActived = false;
+  }
+  else {
+    Serial.print("Aún no es hora de almacenar datos. Hora actual: ");
+    Serial.print(currentHour);
+    Serial.print(":");
+    Serial.println(currentMinute);
   }
 }
 /* Storage Drip Data */
-void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive){
-  if(currentDay != lastDayDrip && currentHour == endHour && currentMinute == endMinute){
-    sprintf(key, "riego_day%d", currentDay);
-    preferences.putBool(key, dripActived);
-    if(!dripActive){
-      counterDripDays ++;
-    }else{
-      counterDripDays = 0;
+void storeDripData(int currentDay, int currentHour, int currentMinute, bool dripActive) {
+  sprintf(key, "Riego_day%d", currentDay);     // Generar clave única para el día actual
+  // Comprobar si estamos después de la hora de guardado y si los datos aún no se han almacenado
+  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {
+    if (!preferences.isKey(key)) {
+      preferences.putBool(key, dripActive);         // Almacenar el estado del riego para el día actual
+      Serial.printf("Datos de riego almacenados para el día %d: %s\n", currentDay, dripActive ? "Sí" : "No");
+      if (!dripActive) {         // Actualizar el contador según el estado de riego
+        counterDripDays++;
+      } else {
+        counterDripDays = 0;
+      }
+      lastDayDrip = currentDay;         // Actualizar el último día de almacenamiento de datos de riego
+      dripActived = false; // Reiniciar estado de riego tras almacenar
+    } else {
+      Serial.printf("Los datos de riego para el día %d ya han sido almacenados.\n", currentDay);         // Mensaje si ya se almacenaron los datos
     }
-    dripActived = false;
-    lastDayDrip = currentDay;
   }
-  if(counterDripDays == 25){
-
+  if (counterDripDays == 25) {     // Comprobar si se han acumulado 25 días consecutivos sin riego
+    Serial.println("Advertencia: Han pasado 25 días sin activarse el riego.");
   }
 }
+/* Stored Data Verifycation */
+void verifyStoredData(int day) {
+  // Comprobamos si los datos existen en la memoria no volátil
+  sprintf(key, "Higro_day%d", day);
+  int storedHigro = preferences.getInt(key, -100); // -1 indica que el dato no existe
+  if (storedHigro != -100) {
+    Serial.print("Higrometría encontrada para el día ");
+    Serial.print(day);
+    Serial.print(": ");
+    Serial.println(storedHigro);
+  } else {
+    Serial.println("Error: No se encontró higrometría almacenada.");
+  }
+  if (dhtOk) {
+    sprintf(key, "Humedad_day%d", day);
+    int storedHumidity = preferences.getInt(key, -100);
+    if (storedHumidity != -100) {
+      Serial.print("Humedad encontrada para el día ");
+      Serial.print(day);
+      Serial.print(": ");
+      Serial.println(storedHumidity);
+    } else {
+      Serial.println("Error: No se encontró humedad almacenada.");
+    }
+    sprintf(key, "Temp_day%d", day);
+    int storedTemp = preferences.getInt(key, -100);
+    if (storedTemp != -100) {
+      Serial.print("Temperatura encontrada para el día ");
+      Serial.print(day);
+      Serial.print(": ");
+      Serial.println(storedTemp);
+    } else {
+      Serial.println("Error: No se encontró temperatura almacenada.");
+    }
+  }
+}
+void showMemoryStatus() {
+  size_t freeHeap = ESP.getFreeHeap();
+  size_t totalHeap = ESP.getHeapSize();
+  size_t usedHeap = totalHeap - freeHeap;
+  Serial.println("----- Estado de la memoria -----");
+  Serial.print("Memoria total: ");
+  Serial.print(totalHeap);
+  Serial.println(" bytes");
+  Serial.print("Memoria usada: ");
+  Serial.print(usedHeap);
+  Serial.println(" bytes");
+  Serial.print("Memoria libre: ");
+  Serial.print(freeHeap);
+  Serial.println(" bytes");
+  Serial.println("--------------------------------");
+}
+
 /* Sender Monthly Mail */
 void checkAndSendEmail(){
   // Comprobar si es el día y la hora configurados para enviar el correo
@@ -849,28 +814,49 @@ void checkAndSendEmail(){
 /* Monthly Data Message Maker */
 String monthlyMessage() {
   emailBuffer[0] = '\0';  // Inicializar el buffer vacío
-  for (int day = 1; day <= 31; day++) {       // Iterar sobre los días del mes (1-31)
+  for (int day = 1; day <= 31; day++) {  // Iterar sobre los días del mes (1-31)
     // Crear claves únicas para cada día
     snprintf(dayKeyHigro, sizeof(dayKeyHigro), "Higro_day%d", day);
     snprintf(dayKeyHum, sizeof(dayKeyHum), "Humedad_day%d", day);
     snprintf(dayKeyTemp, sizeof(dayKeyTemp), "Temp_day%d", day);
     snprintf(dayKeyRiego, sizeof(dayKeyRiego), "Riego_day%d", day);
-    // Verificar si existen los datos para ese día en `Preferences`
-    if (preferences.isKey(dayKeyRiego) && preferences.isKey(dayKeyHigro)) {
-      int higro = preferences.getInt(dayKeyHigro);
-      int hum = preferences.getInt(dayKeyHum);
-      int tempe = preferences.getInt(dayKeyTemp);
-      bool dripWasOn = preferences.getBool(dayKeyRiego);
-      snprintf(lineBuffer, sizeof(lineBuffer),                // Añadir los datos de este día al cuerpo del correo. Formatear una línea de datos para este día
-               "Día %d:\n Humedad del sustrato = %d%%\n"
-               "Humedad ambiental = %d%%\n"
-               "Temperatura ambiental = %d °C\n"
-               "Riego activado: %s\n",
-               day, higro, hum, tempe, dripWasOn ? "Sí" : "No");
+    // Verificar si existen datos para este día
+    bool hasData = preferences.isKey(dayKeyHigro) || preferences.isKey(dayKeyHum) || 
+                   preferences.isKey(dayKeyTemp) || preferences.isKey(dayKeyRiego);
+    if (hasData) {
+      // Recuperar datos existentes, inicializando con valores predeterminados
+      int higro = preferences.isKey(dayKeyHigro) ? preferences.getInt(dayKeyHigro) : -1;
+      int hum = preferences.isKey(dayKeyHum) ? preferences.getInt(dayKeyHum) : -1;
+      int tempe = preferences.isKey(dayKeyTemp) ? preferences.getInt(dayKeyTemp) : -1;
+      bool dripWasOn = preferences.isKey(dayKeyRiego) ? preferences.getBool(dayKeyRiego) : false;
+      // Mensajes de depuración para verificar los datos recuperados
+      Serial.printf("Datos recuperados para el día %d: Higro=%d, Hum=%d, Temp=%d, Riego=%s\n", 
+                    day, higro, hum, tempe, dripWasOn ? "Sí" : "No");
+      // Construir mensaje para el día actual
+      snprintf(lineBuffer, sizeof(lineBuffer),
+               "Día %d:\n", day);
+      strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
+      if (preferences.isKey(dayKeyHigro)) {
+        snprintf(lineBuffer, sizeof(lineBuffer), " Humedad del sustrato = %d%%\n", higro);
+        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
+      }
+      if (preferences.isKey(dayKeyHum)) {
+        snprintf(lineBuffer, sizeof(lineBuffer), " Humedad ambiental = %d%%\n", hum);
+        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
+      }
+      if (preferences.isKey(dayKeyTemp)) {
+        snprintf(lineBuffer, sizeof(lineBuffer), " Temperatura ambiental = %d °C\n", tempe);
+        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
+      }
+      if (preferences.isKey(dayKeyRiego)) {
+        snprintf(lineBuffer, sizeof(lineBuffer), " Riego activado: %s\n", dripWasOn ? "Sí" : "No");
+        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
+      }
     } else {
-      snprintf(lineBuffer, sizeof(lineBuffer), "Día %d: Sin datos.\n", day);             // Si no hay datos, formatear un mensaje vacío para este día
+      // Si no hay datos para este día, imprimimos "Sin datos"
+      snprintf(lineBuffer, sizeof(lineBuffer), "Día %d: Sin datos.\n", day);
+      strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
     }
-    strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);     // Añadir la línea al buffer principal
   }
   return String(emailBuffer);  // Convertir a String para devolver
 }
@@ -934,7 +920,7 @@ void mailActiveSchedule(String message){
            "Hora de inicio: %s\n"
            "Hora de fin: %s\n"
            "Humedad sustrato: %d%% \n"
-           "Datos almacenados de días anteriores del mes: %s\n",
+           "Datos almacenados de días anteriores del mes:\n%s\n",
            idSDHex.c_str(),                // ID del SD en formato string
            idUser.c_str(),                 // ID del usuario
            idSmartDrip.c_str(),            // ID del dispositivo SmartDrip
@@ -975,7 +961,7 @@ void mailActiveSchedule(String message){
   mailActiveScheduleCheck = true;
 }
 /* Mail No ACtive Schedule */
-void mailNoActiveSchedule(){
+void mailNoActiveSchedule(String message){
   nowTime = rtc.getTime();
   date = rtc.getDate();
   snprintf(textMsg, sizeof(textMsg),
@@ -989,7 +975,8 @@ void mailNoActiveSchedule(){
            "Horario de activación de riego: \n"
            "Hora de inicio: %s\n"
            "Hora de fin: %s\n"
-           "Humedad sustrato: %d%% \n",
+           "Humedad sustrato: %d%% \n"
+           "Datos almacenados de días anteriores del mes:\n%s\n",
            idSDHex.c_str(),                // ID del SD en formato string
            idUser.c_str(),                 // ID del usuario
            idSmartDrip.c_str(),            // ID del dispositivo SmartDrip
@@ -999,7 +986,8 @@ void mailNoActiveSchedule(){
            dripHumidity,                   // Límite de humedad para riego
            startTime.c_str(),              // Hora de inicio de riego
            endTime.c_str(),                // Hora de fin de riego
-           substrateHumidity);             // Humedad del sustrato
+           substrateHumidity,             // Humedad del sustrato
+           message.c_str());               // Datos almacenados de días anteriores del mes
   finalMessage = String(textMsg);
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
