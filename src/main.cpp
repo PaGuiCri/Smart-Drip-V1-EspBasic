@@ -42,6 +42,7 @@ uint32_t crc32(const uint8_t *data, size_t length) {
 SMTPSession smtp;
 void smtpCallback(SMTP_Status status);
 void mailSmartDripOn();                     // mail proceso de riego iniciado
+void mailSmartDripOff();                    // mail proceso de riego finalizado
 void mailStartSystem();                     // mail inicio sistema
 void mailErrorValve();                      // mail error en electroválvula
 void mailErrorDHT11();                      // mail error en sensor DHT11
@@ -53,6 +54,7 @@ void mailCalibrateSensor();
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
 SMTP_Message mailDripOn;
+SMTP_Message mailDripOff;
 SMTP_Message mailErrValve;
 SMTP_Message mailErrorFlowSensor;
 SMTP_Message mailErrorDHT;
@@ -62,6 +64,7 @@ SMTP_Message mailNoActivSchedule;
 SMTP_Message mailMonthlyData;
 SMTP_Message mailCalibratSensor;
 bool mailDripOnSended = false;
+bool mailDripOffSended = false;
 bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
 bool mailErrorHigroSended = false;
@@ -71,13 +74,10 @@ bool mailStartSystemActive = true;
 bool mailActiveScheduleActive = true;
 bool mailNoActiveScheduleActive = true;
 bool mailSmartDripOnActive = true;
+bool mailSmartDripOffActive = true;
 bool mailCalibrateSensorSended = false;
 String showErrorMail, showErrorMailConnect, finalMessage = "";
 char errorMailConnect[256], errorMail[256], textMsg[4800];
-/* Timers */
-volatile bool toggle = true;
-void IRAM_ATTR onTimer1();
-hw_timer_t *timer1 = NULL;
 /* Open/Close Solenoid Valve  */
 void openDripValve();
 void closeDripValve();
@@ -96,7 +96,7 @@ String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
 int currentHour, currentMinute, currentDay, lastDay, lastDrip, lastDayDrip, counterDripDays;
-int emailSendDay = 1;  // Día del mes en que se enviará el correo
+int emailSendDay = 1;          // Día del mes en que se enviará el correo
 int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
@@ -113,11 +113,12 @@ const char* ntpServer = "pool.ntp.org";
 const long gmtOFFset_sec = 3600;
 const int daylightOffset_sec = 3600;
 /* Terminal configuration for hygrometer and DHT11 */
-void getDHTValues();     // Método para obtener los valores del sensor DHT11
-void getHigroValues();   // Método para obtener los valores del sensor higrómetro
-void handleDrip();     // Método para el manejo de los procesos de riego
+void getDHTValues();               // Método para obtener los valores del sensor DHT11
+void getHigroValues();             // Método para obtener los valores del sensor higrómetro
+void handleDrip();                 // Método para el manejo de los procesos de riego
+void handleScheduleDrip();         // Método para el manedo del riego dentro del horario activo
 void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
-void finalizeDrip();   // Método para el manejo de la finalización del proceso de riego
+void finalizeDrip();               // Método para el manejo de la finalización del proceso de riego
 #define PinHigro 34  // Nueva configuración de pines antes 34. volvemos al pin 34 desde el 13
 #define PinDHT 4     // El pin del sensor DHT tiene q ser el 4 si se trabaja con la biblioteca SimpleDHT
 float temp, humidity = 0;   // Variables para almacenar los datos recibidos del sensor DHT11
@@ -131,10 +132,6 @@ bool outputEstatus = false;
 const int dry = 460;
 const int wet = 0;                   // Si se incrementa, el máximo (100%) sera mayor y viceversa
 //int dry, wet = 0;            // Variables para almacenar los valores límites del sensor higrómetro
-int dripTime, dripTimeCheck = 0;
-int dripHumidity, dripHumidityCheck = 0;
-int dripTimeLimit = 5;
-int dripHumidityLimit = 45;  
 /* Variables for flow calculation */
 volatile int pulses = 0;
 float caudal = 0.0;
@@ -156,15 +153,28 @@ char key[20], dayKeyHigro[20], dayKeyHum[20], dayKeyTemp[20], dayKeyRiego[20], e
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 /* Pin Config */
-#define dripValveVin1 27  // Nueva configuración de pines antes 32. Salida Electroválvula 1
-#define dripValveGND1 26  // Nueva configuración de pines antes 25. Salida Electroválvula 1
-#define dripValveVin2 25  // Segunda válvula opcional
-#define dripValveGND2 33  // Segunda válvula opcional
-#define flowSensor  13    // Nueva configuración de pines antes 20 pendiente test pin 13
-bool dripValve, activePulse;
-bool dhtOk, dhtOkCheck, checkTimer, dripActived = false;
+#define dripValveVin1 27             // Nueva configuración de pines antes 32. Salida Electroválvula 1
+#define dripValveGND1 26             // Nueva configuración de pines antes 25. Salida Electroválvula 1
+#define dripValveVin2 25             // Segunda válvula opcional
+#define dripValveGND2 33             // Segunda válvula opcional
+#define flowSensor  13               // Nueva configuración de pines antes 20 pendiente test pin 13
+/* Drip Control Variables */
+int dripHumidity = 0;                // Indica el límite de humedad del sustrato dentro del proceso de riego
+int dripTimeLimit = 4;               // Duración del riego en minutos
+int dripHumidityLimit = 40;          // Indica el límite de humedad para activar el riego
+int remainingMinutes = 0;            // Variable para almacenar los minutos restantes de riego
+int remainingSeconds = 0;            // Variable para almacenar los segundos restantes de riego
+unsigned long startDripTime = 0;     // Marca el tiempo de inicio del riego en milisegundos
+unsigned long dripTime = 0;          // Indica el tiempo de riego en milisegundos dentro del proceso de riego activo
+unsigned long elapsedTime = 0;       // Tiempo transcurrido desde el inicio del riego en milisegundos
+unsigned long remainingTime = 0;     // Tiempo restante para finalizar el riego en milisegundos
+bool dripValve= false;               // Indica si la electroválvula está abierta o cerrada
+bool activePulse = false;            // Indica si el pulso de apertura o cierre de la válvula está activo
+bool dhtOk, dhtOkCheck = false;      // Indica si el sensor DHT11 está funcionando correctamente
+bool dripActived = false;            // Indica si el riego fue activado para almacenar la información diaria
+bool checkTimer = false;             // Indica si hay un proceso de riego en marcha
 /* Pulse Variables */
-const unsigned long pulseTime = 50; // Duración del pulso en milisegundos = 50ms
+const unsigned long pulseTime = 100; // Duración del pulso en milisegundos = 50ms
 unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
 void setup() {
@@ -204,12 +214,6 @@ void setup() {
   pinMode(flowSensor, INPUT);
   /* Configuración de la interrupción para detectar los pulsos del sensor de flujo */
   attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
-  /* Temporizador */
-  timer1 = timerBegin(0, 80, true);
-  timerAttachInterrupt(timer1, &onTimer1, true);
-  timerAlarmWrite(timer1, 1000000, true);
-  timerAlarmEnable(timer1);
-  timerAlarmDisable(timer1);
   /* Configuración de emails */
   //smtp.debug(1);
   //smtp.callback(smtpCallback);
@@ -223,12 +227,17 @@ void setup() {
   mailStartSDS.sender.email = AUTHOR_EMAIL;
   mailStartSDS.subject = "Estado ESP32 Smart Drip";
   mailStartSDS.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de Estado de riego de Smart Drip System */
+  /* Mail de inicio de riego de Smart Drip System */
   mailDripOn.sender.name = "Smart Drip System";
   mailDripOn.sender.email = AUTHOR_EMAIL;
-  mailDripOn.subject = "Estado Riego Smart Drip";
+  mailDripOn.subject = "Inicio Riego Smart Drip";
   mailDripOn.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de error en electrválvula de riego */
+  /* Mail de finalización de riego de Smart Drip System */
+  mailDripOff.sender.name = "Smart Drip System";
+  mailDripOff.sender.email = AUTHOR_EMAIL;
+  mailDripOff.subject = "Fin Riego Smart Drip";
+  mailDripOff.addRecipient("Pablo", "falder24@gmail.com");
+  /* Mail de error en electroválvula de riego */
   mailErrValve.sender.name = "Smart Drip System";
   mailErrValve.sender.email = AUTHOR_EMAIL;
   mailErrValve.subject = "Estado válvula de Smart Drip";
@@ -288,46 +297,20 @@ void loop() {
   /* Comprobación de horario activo */
   withinSchedule = isWithinSchedule(currentHour, currentMinute);
   /* Comprobar si el temporizador de riego está habilitado */
-  checkTimer = timerAlarmEnabled(timer1);
   dripActived = checkTimer;  // Actualizar el estado de la activación del riego
-  if (!checkTimer) {    // Si el temporizador no está habilitado, reiniciar los valores predeterminados de riego
-    dripTime = dripTimeLimit;
-    dripTimeCheck = dripTimeLimit;
-    dripHumidity = dripHumidityLimit;
-    Serial.println("Timer disabled");
-  } else {       // Si el temporizador está habilitado, indicar que el proceso de riego está en curso
-    Serial.println("Timer enabled");
-    Serial.println("Drip process underway");
-  }
-    // Mostrar los valores actuales de tiempo y humedad de riego
-  Serial.print("Drip time: ");
-  Serial.println(dripTime);
-  Serial.print("Drip humidity: ");
-  Serial.println(dripHumidity);
   Serial.print("Log Error conectando con el servidor smtp almacenado: ");
   Serial.println(showErrorMailConnect);
   Serial.print("Log Error enviando mails almacenado: ");
   Serial.println(showErrorMail);
   if (withinSchedule) {   // Si estamos dentro del horario de riego
     /* Manejar el proceso de riego cuando estamos dentro del horario programado */
-    handleDrip();    
+    handleScheduleDrip();
   } else {
     /* Manejar situaciones de riego fuera del horario programado */
     handleOutOfScheduleDrip();
   }
   /* Finalizar el proceso de riego si el tiempo de riego ha terminado */
   finalizeDrip();
-}
-/* Timer 1min */
-void IRAM_ATTR onTimer1(){
-  toggle ^= true;
-  if(toggle == true){
-   counter++;
-    if(counter == 59){
-      counter = 0;
-      dripTime--;
-    }
-  }
 }
 /* Get Time */
 void extractTimeValues() {
@@ -361,54 +344,76 @@ bool isWithinSchedule(int currentHour, int currentMinute) {
         return (currentTotalMinutes >= startTotalMinutes || currentTotalMinutes <= endTotalMinutes);
     }
 }
-/* Handle Irrigation */
-void handleDrip() {
+void handleScheduleDrip(){
   getHigroValues();
   mailNoActiveScheduleCheck = false;
   Serial.println("Active irrigation schedule");
   if (!mailActiveScheduleCheck && mailActiveScheduleActive) {  
     dataMonthlyMessage = monthlyMessage();
     Serial.println(dataMonthlyMessage);
-    mailActiveSchedule(dataMonthlyMessage);  // Envío mail horario de riego activo - desactivado
+    mailActiveSchedule(dataMonthlyMessage);                 // Envío mail horario de riego activo
   }
-  if (substrateHumidity > dripHumidity) {
-    if (!checkTimer) {
-      Serial.println("Wet substrate, no need to water");
-    }
-  } else {
-    Serial.println("Dry substrate, needs watering");
-    timerAlarmEnable(timer1);
-    if (!dripValve) {
-      openDripValve();
-      if(flowSensorEnabled){
-      flowMeter();   // Solo se llama si el sensor de flujo está habilitado
+  if (!checkTimer) {                                        // Si el temporizador no está habilitado, reiniciar los valores predeterminados de riego
+    dripTime = dripTimeLimit * 60000;                       // Indica el tiempo de riego en milisegundos según el tiempo límite marcado por el usuario
+    dripHumidity = dripHumidityLimit;
+    Serial.println("Timer disabled");
+  } else {                                                  // Si el temporizador está habilitado, indicar que el proceso de riego está en curso
+    Serial.println("Timer enabled");
+    Serial.println("Drip process underway");
+  }
+  if (substrateHumidity > dripHumidity) {    
+      if (!checkTimer) {
+        Serial.println("Wet substrate, no need to water");
+      }else {
+        Serial.println("Drip process already in progress");
       }
-      Serial.println("Irrigation process underway");  
-    } else {
-      if(flowSensorEnabled){
-      flowMeter();   // Solo se llama si el sensor de flujo está habilitado
+  } else {
+      Serial.println("Dry substrate, needs watering");
+      handleDrip();
+  }
+}
+/* Handle Drip Process */
+void handleDrip() {
+  if (!checkTimer) {
+    startDripTime = millis();                                 // Marcar el tiempo de inicio del riego
+  }
+  if (!dripValve) {
+    openDripValve();
+    checkTimer = true;
+    mailDripOffSended = false;
+    if(flowSensorEnabled) {
+      flowMeter();                                            // Solo se llama si el sensor de flujo está habilitado
+    }
+    Serial.println("Drip process underway");  
+  } else {
+    if(flowSensorEnabled) {
+      flowMeter();                                            // Solo se llama si el sensor de flujo está habilitado
       Serial.print("Caudal: ");
       Serial.print(caudal);
       Serial.print(" L/min - Volumen acumulado: ");
       Serial.print(totalLitros);
       Serial.println(" L.");
-      }
-      if (!mailDripOnSended && mailSmartDripOnActive) {  
-        mailSmartDripOn();
-      }
     }
-    dripValve = true; // *** revisar si conviene activar esta variable aquí o dentro del método de apertura
-    Serial.print("Salida ValvulaRiego: ");
-    Serial.println(dripValve);
-    if(flowSensorEnabled){
-    Serial.print("Estado sensor flujo: ");
-    Serial.println(flowMeterEstatus);    
+    if (!mailDripOnSended && mailSmartDripOnActive) {  
+      mailSmartDripOn();
     }
-    Serial.print("Contador conectado: ");
-    Serial.println(counter);
-    Serial.print("Tiempo de riego: ");
-    Serial.println(dripTime + " min.");
-    delay(500);
+  }
+  elapsedTime = millis() - startDripTime;                     // Calcular el tiempo transcurrido desde el inicio del riego en milisegundos
+  remainingTime = dripTime - elapsedTime;                     // Mostrar el tiempo restante
+  remainingMinutes = remainingTime / 60000;
+  remainingSeconds = (remainingTime % 60000) / 1000;
+  Serial.print("Drip in progress. Time remaining: ");
+  Serial.print(remainingMinutes);
+  Serial.print(" minutes, ");
+  Serial.print(remainingSeconds);
+  Serial.println(" seconds.");
+  if (flowSensorEnabled) {
+    flowMeter();
+    Serial.print("Caudal: ");
+    Serial.print(caudal);
+    Serial.print(" L/min - Volumen acumulado: ");
+    Serial.print(totalLitros);
+    Serial.println(" L.");
   }
 }
 /* Handle Out of Schedule Irrigation */
@@ -425,6 +430,7 @@ void handleOutOfScheduleDrip() {
   if (!dripValve && caudal != 0) {
     if (closeValveCounter != 0) {
       closeValveError();
+      Serial.println("Emergency valve closure");
     }
     if (flowSensorEnabled && flowMeterEstatus && !mailErrorValveSended && closeValveCounter == 0) {
       mailErrorValve();
@@ -435,13 +441,27 @@ void handleOutOfScheduleDrip() {
 }
 /* Finalize Irrigation */
 void finalizeDrip() {
-  if (dripTime <= 0) {
-    Serial.println("Tiempo de Riego terminado");
-    timerAlarmDisable(timer1);
-    if (dripValve == true) {
-      closeDripValve();
-      dripValve = false;
-      mailDripOnSended = false;
+  if(checkTimer){
+    elapsedTime = millis() - startDripTime;                     // Calcular el tiempo transcurrido desde el inicio del riego en milisegundos
+    remainingTime = dripTime - elapsedTime;                     // Mostrar el tiempo restante
+    remainingMinutes = remainingTime / 60000;
+    remainingSeconds = (remainingTime % 60000) / 1000;
+    Serial.print("Drip in progress. Time remaining: ");
+    Serial.print(remainingMinutes);
+    Serial.print(" minutes, ");
+    Serial.print(remainingSeconds);
+    Serial.println(" seconds.");                
+    if (elapsedTime >= dripTime) {
+      Serial.println("Drip process completed");
+      if (dripValve == true) {
+        closeDripValve();
+        checkTimer = false;                                    // Finalizar el proceso de riego
+        mailDripOnSended = false;
+        if(!mailDripOffSended && mailSmartDripOffActive){
+          mailSmartDripOff();
+        }
+        getHigroValues();
+      }
     }
   }
 }
@@ -449,13 +469,6 @@ void finalizeDrip() {
 void getHigroValues(){
   higroValue = analogRead(PinHigro);
   substrateHumidity = map(higroValue, wet, dry, 100, 0);
-  /*if(higroValue < wet || higroValue > dry){
-    Serial.println("ADVERTENCIA: El sensor está fuera del rango calibrado. Recalibración recomendada.");
-    if(!mailErrorHigroSended){
-      Serial.println(" Mail error en sensor de humedad enviado ");
-      mailErrorSensorHigro();
-    }
-  }*/
   Serial.print("Valor leido en el sensor de humedad: ");
   Serial.println(higroValue);
   Serial.print("Valor humedad máxima: ");
@@ -1061,6 +1074,53 @@ void mailSmartDripOn(){
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   mailDripOnSended = true;
+  smtp.closeSession();
+}
+/* Mail Drip Off */
+void mailSmartDripOff(){
+  nowTime = rtc.getTime();  //Probar si no es necesario actualizar hora y fecha para el envío del mail  
+  date = rtc.getDate(); 
+  snprintf(textMsg, sizeof(textMsg),
+           "%s \n%s \n"
+           "Con fecha: %s\n"
+           "Riego finalizado correctamente en Smart Drip%s a las: %s\n"
+           "Tiempo de riego: %d min. \n"
+           "Límite de humedad de riego: %d%% \n"
+           "Humedad sustrato: %d%% \n",
+           idSDHex.c_str(),                // ID del SD en formato string
+           idUser.c_str(),                 // ID del usuario
+           date.c_str(),                   // Fecha
+           idSmartDrip.c_str(),            // ID del SmartDrip
+           nowTime.c_str(),                // Hora actual
+           dripTimeLimit,                  // Tiempo de riego en minutos
+           dripHumidity,                   // Límite de humedad para riego
+           substrateHumidity);             // Humedad del sustrato
+  finalMessage = String(textMsg);
+  mailDripOff.text.content = finalMessage.c_str();
+  mailDripOff.text.charSet = "us-ascii";
+  mailDripOff.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailDripOff.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  if(!smtp.connect(&session)){
+    snprintf(errorMailConnect, sizeof(errorMailConnect),
+         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
+         date, nowTime, smtp.errorReason().c_str());
+    preferences.putString("erSMTPSer", errorMailConnect);
+    Serial.print("Error conectando al servidor SMTP: \n");
+    Serial.println(errorMailConnect);
+    return;
+  }
+  if(!MailClient.sendMail(&smtp, &mailDripOff)){
+    snprintf(errorMail, sizeof(errorMail),
+         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
+         date, nowTime, smtp.errorReason().c_str());
+    preferences.putString("lastMailError", errorMail);
+    Serial.println("Error envío Email: ");
+    Serial.println(errorMail);
+  }else{
+    Serial.println("Correo enviado con exito");
+  }
+  ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
+  mailDripOffSended = true;
   smtp.closeSession();
 }
 /* Mail Solenoid Valve Error */
