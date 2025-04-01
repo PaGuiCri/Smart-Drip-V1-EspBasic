@@ -88,6 +88,8 @@ ESP32Time rtc;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 void NTPsincro();
+void saveLastSyncTime(time_t timestamp);
+time_t getLastSyncTime();
 /* Variables to save date and time */
 String nowTime = "";
 String date = "";
@@ -109,9 +111,7 @@ String monthlyMessage(int month);
 void cleanData();   
 void createID();
 /* NTP server config */
-const char* ntpServer = "pool.ntp.org";
-const long gmtOFFset_sec = 3600;
-const int daylightOffset_sec = 3600;
+const char* ntpServer = "hora.roa.es"; // Servidor NTP para sincronizar la hora
 /* Terminal configuration for hygrometer and DHT11 */
 void getDHTValues();               // Método para obtener los valores del sensor DHT11
 void getHigroValues();             // Método para obtener los valores del sensor higrómetro
@@ -194,8 +194,8 @@ void setup() {
         Serial.printf("Espacio usado: %u bytes\n", SPIFFS.usedBytes());
     }
     /* Start preferences */
-  preferences.begin("sensor_data", false);
-  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
+  preferences.begin("sensor_data", true);        
+  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado                         
   /* Creación de ID único */
   createID();
   Serial.print("ID único CRC32: ");
@@ -203,6 +203,7 @@ void setup() {
   idSDHex += String(idNumber, HEX);
   showErrorMail = preferences.getString("lastMailError", " No mail errors " );
   showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
+  preferences.end();     
   Serial.print("Error enviando mails almacenado: ");
   Serial.println(showErrorMail);
   Serial.print("Error conectando con el servidor SMTP almacenado: ");
@@ -620,7 +621,9 @@ if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
     // Muestra el hash en el monitor serial
     Serial.print("ID único (CRC32): ");
     Serial.println(idNumber, HEX);
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putUInt("device_id", idNumber);
+    preferences.end();  // 🔹 Cierra Preferences después de eliminar los datos
   }
 }
 /* New Start WiFi */
@@ -673,150 +676,165 @@ void handleWiFiReconnection() {
     Serial.println("Conexión WiFi estable. ");
   }
 }
+/* Function to save the last synchronized time in NVS memory */
+void saveLastSyncTime(time_t timestamp) {
+  preferences.begin("sensor_data", false); 
+  preferences.putULong64("lastSync", timestamp);  // Guarda el timestamp en NVS
+  preferences.end(); 
+}
+
+/* Function to retrieve the last synchronized time from NVS memory */
+time_t getLastSyncTime() {
+  preferences.begin("sensor_data", true);                   // Modo lectura (true)
+  time_t lastSync = preferences.getULong64("lastSync", 0);  // Recupera el timestamp, 0 si no hay ninguno
+  preferences.end();                                        // Cierra Preferences después de leer
+  return lastSync;
+}
 /* NTP Sincronization with RTC */
-void NTPsincro(){
-  configTime(gmtOFFset_sec, daylightOffset_sec, ntpServer);
-  struct tm timeinfo;
-  int attempts = 0;
-  const int maxAttempts = 5;                              // Número máximo de reintentos
-  while (attempts < maxAttempts) {
-    if (getLocalTime(&timeinfo)) {
-        Serial.println("Hora sincronizada con NTP:");     // Mostrar la fecha y hora formateada
-        Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");   
-        rtc.setTimeStruct(timeinfo);                      // Establecer el RTC con la estructura de tiempo obtenida
-        nowTime = rtc.getTime();
-        date = rtc.getDate();
-        return;
-    }
-    Serial.println("Error al sincronizar con NTP. Reintentando...");
-    attempts++;
-    delay(2000);
+void NTPsincro() {
+  struct tm timeinfo;                                             // Estructura para almacenar la hora obtenida de NTP
+  Serial.println("Intentando sincronizar con NTP...");
+  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "es.pool.ntp.org");  // Configurar zona horaria de España (M3.5.0 = último domingo de marzo, M10.5.0/3 = último domingo de octubre)
+  int attempts = 0;                                               // Contador de intentos
+  const int maxAttempts = 5;                                      // Máximo número de intentos para sincronizar
+  while (attempts < maxAttempts) {                                // Intentar obtener la hora desde el servidor NTP
+      if (getLocalTime(&timeinfo)) {                              // Si la hora se obtiene correctamente...
+          Serial.println("✔ Hora sincronizada con NTP:");
+          Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+
+          rtc.setTimeStruct(timeinfo);                            // Configurar el RTC interno con la nueva hora
+          time_t nowTime = rtc.getEpoch();                        // Obtener la hora actual en formato epoch
+          saveLastSyncTime(nowTime);                              // Guardar la hora sincronizada en NVS
+          return;
+      }
+      Serial.println("❌ Error al sincronizar con NTP. Reintentando..."); 
+      attempts++;
+      delay(2000);
   }
-  Serial.println("Error: No se pudo sincronizar con NTP tras varios intentos."); 
-  Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));  // Mostrar la hora en formato legible
+  Serial.println("⚠ No se pudo sincronizar con NTP. Usando la última hora guardada...");
+  time_t lastSync = getLastSyncTime();                            // Recuperar la última hora sincronizada desde la memoria NVS
+  if (lastSync > 0) {                                             // Si hay una hora almacenada en NVS...
+      rtc.setTime(lastSync);                                      // Configurar el RTC con esa hora
+      Serial.println("✔ Última hora recuperada de Preferences:");
+      Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));
+  } else {                                                        // Si nunca se ha sincronizado antes, no hay datos en NVS
+      Serial.println("⚠ No hay hora previa almacenada. La hora será incorrecta hasta la próxima sincronización.");
+  }
 }
 /* Storage Data Sensors */
-void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute) {
-  Serial.println("Comprobando si es necesario almacenar datos de sensores...");
-  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {        // Verificar si estamos después de la hora límite para almacenar datos
-    Serial.println("Es hora de almacenar datos..."); 
-    sprintf(substrateKey, "Higro_%d", currentMonth);         // Crear claves únicas para los arrays mensuales
-    sprintf(humidityKey, "Humedad_%d", currentMonth);
-    sprintf(tempKey, "Temp_%d", currentMonth);
-    size_t dataSize = 31 * sizeof(int);
-    if (preferences.isKey(substrateKey)) {                            // Cargar datos existentes si ya están almacenados
-      preferences.getBytes(substrateKey, substrateData, dataSize);
-    }
-    if (preferences.isKey(humidityKey)) {
-      preferences.getBytes(humidityKey, humidityData, dataSize);
-    }
-    if (preferences.isKey(tempKey)) {
-      preferences.getBytes(tempKey, tempData, dataSize);
-    }
-    if (substrateData[currentDay - 1] == 0) {                         // Verificar si el día actual ya tiene datos almacenados. Usamos 0 como indicador de que no hay datos
-      Serial.println("No hay datos almacenados para el día actual. Obteniendo valores...");
-      getHigroValues();
-      getDHTValues();
-      substrateData[currentDay - 1] = substrateHumidity;              // almacenar los valores en los arrays correspondientes
-      if (dhtOk) {
-        humidityData[currentDay - 1] = humidity;
-        tempData[currentDay - 1] = temp;
-      }
-      preferences.putBytes(substrateKey, substrateData, dataSize);    // Guardar los arrays actualizados en la memoria persistente
-      preferences.putBytes(humidityKey, humidityData, dataSize);
-      preferences.putBytes(tempKey, tempData, dataSize);
-      lastDay = currentDay; // Actualizar el último día almacenado
-      Serial.print("Datos de sensores almacenados para el día ");
-      Serial.println(currentDay);
-      verifyStoredData(currentDay, currentMonth); // Verificar los datos almacenados
-    } else {
-      Serial.print("Los datos ya están almacenados para el día ");
-      Serial.println(currentDay);
-      verifyStoredData(currentDay, currentMonth);
-      showMemoryStatus();
-    }
-  } else {
-    Serial.print("Aún no es hora de almacenar datos. Hora actual: ");
-    Serial.print(currentHour);
-    Serial.print(":");
-    Serial.println(currentMinute);
+void storeDailyData(int currentDay, int currentMonth, int newSubstrate, int newHumidity, int newTemp) {
+  char substrateKey[16], humidityKey[16], tempKey[16];
+  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
+  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
+  snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
+  preferences.begin("sensor_data", false);  // Modo escritura
+  size_t intArraySize = 31 * sizeof(int);
+  // Leer los datos actuales antes de modificar
+  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
+  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
+  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
+  bool updated = false;
+  // Guardar solo si cambió
+  if (substrateData[currentDay - 1] != newSubstrate) {
+      substrateData[currentDay - 1] = newSubstrate;
+      updated = true;
   }
+  if (humidityData[currentDay - 1] != newHumidity) {
+      humidityData[currentDay - 1] = newHumidity;
+      updated = true;
+  }
+  if (tempData[currentDay - 1] != newTemp) {
+      tempData[currentDay - 1] = newTemp;
+      updated = true;
+  }
+  if (updated) {  // Escribir solo si hay cambios
+      preferences.putBytes(substrateKey, substrateData, intArraySize);
+      preferences.putBytes(humidityKey, humidityData, intArraySize);
+      preferences.putBytes(tempKey, tempData, intArraySize);
+      Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
+  } else {
+      Serial.printf("✅ Datos del día %d no cambiaron, no se guardan.\n", currentDay);
+  }
+  preferences.end();  // Cerrar memoria
 }
 /* Storage Drip Data */
-void storeDripData(int currentDay, int currentMoth, int currentHour, int currentMinute, bool dripActive) {
-  sprintf(dripKey, "Drip_%d", currentMonth);                      // Generar clave única para el día actual
-  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {                  // Comprobar si estamos después de la hora de guardado y si los datos aún no se han almacenado
-    size_t dataSize = sizeof(dripData);                       // Tamaño del array en bytes
-    if(preferences.isKey(dripKey)){                               // Verificar si ya existe un array de datos para este mes
-      preferences.getBytes(dripKey, dripData, dataSize);          // Si existe, cargar el array desde el almacenamiento persistente
-    }
-    dripData[currentDay - 1] = dripActive;                    // Recordar que los índices del array van de 0 a 30, mientras que los días van de 1 a 31
-    preferences.putBytes(dripKey, dripData, dataSize);            // Guardar el array actualizado de nuevo en el almacenamiento persistente
-    Serial.printf("Datos de riego almacenados para el día %d del mes %d: %s\n", currentDay, currentMonth, dripActive ? "Sí" : "No");           // Mostrar un mensaje en el puerto serie indicando que los datos se han guardado
-    if (!dripActive) {                                        // Actualizar el contador según el estado de riego
-      counterDripDays++;
-    } else {
-      counterDripDays = 0;
-    }
-    lastDayDrip = currentDay;                                 // Actualizar el último día de almacenamiento de datos de riego  
-    dripActived = false;                                      // Reiniciar estado de riego tras almacenar
-  }
-  if (counterDripDays == 25) {                                // Comprobar si se han acumulado 25 días consecutivos sin riego
-    Serial.println("Advertencia: Han pasado 25 días sin activarse el riego.");
+void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive) {
+  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {   
+      char dripKey[16];
+      snprintf(dripKey, sizeof(dripKey), "Drip_%d", currentMonth);
+      preferences.begin("sensor_data", false);  // Modo escritura
+      size_t boolArraySize = 31 * sizeof(bool);
+      // Leer el array antes de modificarlo
+      if (preferences.isKey(dripKey)) {
+          preferences.getBytes(dripKey, dripData, boolArraySize);
+      }
+      // Guardar solo si el valor cambió
+      if (dripData[currentDay - 1] != dripActive) {
+          dripData[currentDay - 1] = dripActive;
+          preferences.putBytes(dripKey, dripData, boolArraySize);
+          Serial.printf("💾 Datos de riego almacenados para el día %d del mes %d: %s\n",
+                        currentDay, currentMonth, dripActive ? "Sí" : "No");
+      } else {
+          Serial.printf("✅ Riego del día %d no cambió, no se guarda.\n", currentDay);
+      }
+      preferences.end();  // Cerrar Preferences
+      counterDripDays = dripActive ? 0 : counterDripDays + 1;
+      lastDayDrip = currentDay;
+      dripActived = false;
+      if (counterDripDays == 25) {  
+          Serial.println("⚠ Advertencia: Han pasado 25 días sin activarse el riego.");
+      }
   }
 }
-/* Stored Data Verifycation */
+/* Stored Data Verification */
 void verifyStoredData(int day, int month) {
-  sprintf(substrateKey, "Higro_%d", month);
-  sprintf(humidityKey, "Humedad_%d", month);
-  sprintf(tempKey, "Temp_%d", month);
+  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
+  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
+  snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
   size_t dataSize = 31 * sizeof(int);
+  preferences.begin("sensor_data", true);  // MODO LECTURA
+  bool foundData = false;  // Bandera para saber si hay algún dato en el mes
   if (preferences.isKey(substrateKey)) {
-    preferences.getBytes(substrateKey, substrateData, dataSize);
+      preferences.getBytes(substrateKey, substrateData, dataSize);
+      foundData = true;
   } else {
-    Serial.println("Error: No se encontró el array de higrometría almacenado.");
-    return;
+      Serial.println("❌ Error: No se encontró el array de higrometría almacenado.");
   }
   if (preferences.isKey(humidityKey)) {
-    preferences.getBytes(humidityKey, humidityData, dataSize);
+      preferences.getBytes(humidityKey, humidityData, dataSize);
+      foundData = true;
   } else if (dhtOk) {
-    Serial.println("Error: No se encontró el array de humedad almacenado.");
+      Serial.println("❌ Error: No se encontró el array de humedad almacenado.");
   }
   if (preferences.isKey(tempKey)) {
-    preferences.getBytes(tempKey, tempData, dataSize);
+      preferences.getBytes(tempKey, tempData, dataSize);
+      foundData = true;
   } else if (dhtOk) {
-    Serial.println("Error: No se encontró el array de temperatura almacenado.");
+      Serial.println("❌ Error: No se encontró el array de temperatura almacenada.");
   }
-  if (day < 1 || day > 31) {                                // Verificar datos del día solicitado
-    Serial.println("Error: Día fuera de rango (1-31).");
-    return;
+  preferences.end();  // Cerrar memoria
+  if (!foundData) {  
+      Serial.println("🚨 No hay datos almacenados para este mes.");
+      return;
   }
-  if (substrateData[day - 1] != 0) { // Verificar higrometría. Usamos 0 como indicador de "sin datos"
-    Serial.print("Higrometría encontrada para el día ");
-    Serial.print(day);
-    Serial.print(": ");
-    Serial.println(substrateData[day - 1]);
-  } else {
-    Serial.println("Error: No se encontró higrometría almacenada.");
+  if (day < 1 || day > 31) {  
+      Serial.println("❌ Error: Día fuera de rango (1-31).");
+      return;
   }
-  if (dhtOk) {                         // Verificar humedad
-    if (humidityData[day - 1] != 0) {
-      Serial.print("Humedad encontrada para el día ");
-      Serial.print(day);
-      Serial.print(": ");
-      Serial.println(humidityData[day - 1]);
-    } else {
-      Serial.println("Error: No se encontró humedad almacenada.");
-    }
-
-    if (tempData[day - 1] != 0) {               // Verificar temperatura
-      Serial.print("Temperatura encontrada para el día ");
-      Serial.print(day);
-      Serial.print(": ");
-      Serial.println(tempData[day - 1]);
-    } else {
-      Serial.println("Error: No se encontró temperatura almacenada.");
-    }
+  int lastSubstrate = 0, lastHumidity = 0, lastTemp = 0;
+  for (int i = 0; i < day; i++) {
+      if (substrateData[i] != 0) lastSubstrate = substrateData[i];
+      if (humidityData[i] != 0) lastHumidity = humidityData[i];
+      if (tempData[i] != 0) lastTemp = tempData[i];
+  }
+  Serial.print("✔ Higrometría día "); Serial.print(day); Serial.print(": ");
+  Serial.println(lastSubstrate);
+  if (dhtOk) {
+      Serial.print("✔ Humedad día "); Serial.print(day); Serial.print(": ");
+      Serial.println(lastHumidity);
+      
+      Serial.print("✔ Temperatura día "); Serial.print(day); Serial.print(": ");
+      Serial.println(lastTemp);
   }
 }
 /* Show Memory Status */
@@ -855,61 +873,33 @@ void checkAndSendEmail(){
 }
 /* Monthly Data Message Maker */
 String monthlyMessage(int month) {
-  emailBuffer[0] = '\0';  // Inicializar el buffer vacío
-  sprintf(substrateKey, "Higro_%d", month);
-  sprintf(humidityKey, "Humedad_%d", month);
-  sprintf(tempKey, "Temp_%d", month);
-  sprintf(dripKey, "Drip_%d", month);
+  preferences.begin("sensor_data", true);
+  emailBuffer[0] = '\0';
+  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
+  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
+  snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
+  snprintf(dripKey, sizeof(dripKey), "Drip_%d", month);
   size_t intArraySize = 31 * sizeof(int);
   size_t boolArraySize = 31 * sizeof(bool);
-  // Cargar los arrays desde la memoria persistente si existen
-  if (preferences.isKey(substrateKey)) {
-    preferences.getBytes(substrateKey, substrateData, intArraySize);
-  }
-  if (preferences.isKey(humidityKey)) {
-    preferences.getBytes(humidityKey, humidityData, intArraySize);
-  }
-  if (preferences.isKey(tempKey)) {
-    preferences.getBytes(tempKey, tempData, intArraySize);
-  }
-  if (preferences.isKey(dripKey)) {
-    preferences.getBytes(dripKey, dripData, boolArraySize);
-  }
-  // Generar el mensaje día a día
+  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
+  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
+  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
+  if (preferences.isKey(dripKey)) preferences.getBytes(dripKey, dripData, boolArraySize);
+  preferences.end();
+  int lastSubstrate = 0, lastHumidity = 0, lastTemp = 0;
   for (int day = 1; day <= 31; day++) {
-    bool hasData = (substrateData[day - 1] != 0 || humidityData[day - 1] != 0 ||
-                    tempData[day - 1] != 0 || dripData[day - 1]);
-    if (hasData) {
-      // Crear mensaje para el día actual
-      snprintf(lineBuffer, sizeof(lineBuffer), "Día %d:\n", day);
+      if (substrateData[day - 1] != 0) lastSubstrate = substrateData[day - 1];
+      if (humidityData[day - 1] != 0) lastHumidity = humidityData[day - 1];
+      if (tempData[day - 1] != 0) lastTemp = tempData[day - 1];
+      bool hasData = lastSubstrate != 0 || lastHumidity != 0 || lastTemp != 0 || dripData[day - 1];
+      if (!hasData) continue;
+      snprintf(lineBuffer, sizeof(lineBuffer),
+               "Día %d: Riego: %s | Humedad sustrato: %d%% | Humedad ambiental: %d%% | Temp: %d°C\n",
+               day, dripData[day - 1] ? "Sí" : "No", lastSubstrate, lastHumidity, lastTemp);
       strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-      if (substrateData[day - 1] != 0) {
-        snprintf(lineBuffer, sizeof(lineBuffer), " Humedad del sustrato = %d%%\n", substrateData[day - 1]);
-        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-      }
-      if (humidityData[day - 1] != 0) {
-        snprintf(lineBuffer, sizeof(lineBuffer), " Humedad ambiental = %d%%\n", humidityData[day - 1]);
-        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-      }
-      if (tempData[day - 1] != 0) {
-        snprintf(lineBuffer, sizeof(lineBuffer), " Temperatura ambiental = %d °C\n", tempData[day - 1]);
-        strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-      }
-      if (dripData[day - 1]) {
-        snprintf(lineBuffer, sizeof(lineBuffer), " Riego activado: Sí\n");
-      } else {
-        snprintf(lineBuffer, sizeof(lineBuffer), " Riego activado: No\n");
-      }
-      strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-    } else {
-      // Si no hay datos para este día, agregar "Sin datos"
-      snprintf(lineBuffer, sizeof(lineBuffer), "Día %d: Sin datos.\n", day);
-      strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-    }
   }
-  return String(emailBuffer);  // Convertir el buffer a String y devolverlo
+  return String(emailBuffer);
 }
-
 /* Mail Start System */
 void mailStartSystem(){
   snprintf(textMsg, sizeof(textMsg),
@@ -936,7 +926,9 @@ void mailStartSystem(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: ");
     Serial.println(errorMailConnect);
     return;
@@ -945,7 +937,9 @@ void mailStartSystem(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -982,7 +976,7 @@ void mailActiveSchedule(String message){
            date.c_str(),                   // Fecha del RTC
            nowTime.c_str(),                // Hora del RTC
            dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidity,                   // Límite de humedad para riego
+           dripHumidityLimit,              // Límite de humedad para riego
            startTime.c_str(),              // Hora de inicio de riego
            endTime.c_str(),                // Hora de fin de riego
            substrateHumidity,              // Humedad del sustrato
@@ -1000,7 +994,9 @@ void mailActiveSchedule(String message){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1009,7 +1005,9 @@ void mailActiveSchedule(String message){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1047,7 +1045,7 @@ void mailNoActiveSchedule(String message){
            date.c_str(),                   // Fecha del RTC
            nowTime.c_str(),                // Hora del RTC
            dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidity,                   // Límite de humedad para riego
+           dripHumidityLimit,              // Límite de humedad para riego
            startTime.c_str(),              // Hora de inicio de riego
            endTime.c_str(),                // Hora de fin de riego
            substrateHumidity,              // Humedad del sustrato
@@ -1065,7 +1063,9 @@ void mailNoActiveSchedule(String message){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1074,7 +1074,9 @@ void mailNoActiveSchedule(String message){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1112,7 +1114,9 @@ void mailSmartDripOn(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1121,7 +1125,9 @@ void mailSmartDripOn(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1159,7 +1165,9 @@ void mailSmartDripOff(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1168,7 +1176,9 @@ void mailSmartDripOff(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1198,7 +1208,9 @@ void mailErrorValve(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1207,7 +1219,9 @@ void mailErrorValve(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1235,7 +1249,9 @@ void mailErrorDHT11(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1244,7 +1260,9 @@ void mailErrorDHT11(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura         
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1273,7 +1291,9 @@ void mailErrorSensorHigro(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1282,7 +1302,9 @@ void mailErrorSensorHigro(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1310,7 +1332,9 @@ void mailCalibrateSensor(){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura         
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1319,7 +1343,9 @@ void mailCalibrateSensor(){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura         
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1374,7 +1400,9 @@ void mailMonthData(String message){
     snprintf(errorMailConnect, sizeof(errorMailConnect),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("erSMTPSer", errorMailConnect);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.print("Error conectando al servidor SMTP: \n");
     Serial.println(errorMailConnect);
     return;
@@ -1383,7 +1411,9 @@ void mailMonthData(String message){
     snprintf(errorMail, sizeof(errorMail),
          "%s\n%s\n El sistema reporta el siguiente error: \n %s",
          date, nowTime, smtp.errorReason().c_str());
+    preferences.begin("sensor_data", false);  // Modo escritura
     preferences.putString("lastMailError", errorMail);
+    preferences.end();  // Cierra Preferences después de guardar los datos
     Serial.println("Error envío Email: ");
     Serial.println(errorMail);
   }else{
@@ -1394,6 +1424,7 @@ void mailMonthData(String message){
 }
 /* Clean Data Preferences */
 void cleanData(){
+  preferences.begin("sensor_data", false);  // Modo escritura
   for(int i = 1; i <= 31; i++){
      snprintf(key, sizeof(key), "Higro_day%d", i);
     preferences.remove(key);
@@ -1404,4 +1435,5 @@ void cleanData(){
     snprintf(key, sizeof(key), "Riego_day%d", i);
     preferences.remove(key);
   }
+  preferences.end();  // Cierra Preferences después de eliminar los datos
 }
