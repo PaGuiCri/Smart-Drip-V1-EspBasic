@@ -104,7 +104,8 @@ int emailSendHour = 9;        // Hora del día en que se enviará el correo (for
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
 void checkAndSendEmail();
-void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute);
+//void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute);
+void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp);
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive);
 void verifyStoredData(int day, int month);
 void showMemoryStatus();
@@ -302,7 +303,7 @@ void loop() {
   /* Extraer valores de tiempo actual y selección de horario */
   extractTimeValues();
   /* Almacenar datos en NVS */
-  storeDailyData(currentDay, currentMonth, currentHour, currentMinute);
+  storeDailyData(currentDay, currentMonth, currentHour, currentMinute, substrateHumidity, humidity, temp);
   storeDripData(currentDay, currentMonth, currentHour, currentMinute, dripActived);
   /* Comprobacion y envío de mail mensual con los datos almacenados */
   checkAndSendEmail();
@@ -726,40 +727,39 @@ void NTPsincro() {
   }
 }
 /* Storage Data Sensors */
-void storeDailyData(int currentDay, int currentMonth, int newSubstrate, int newHumidity, int newTemp) {
-  char substrateKey[16], humidityKey[16], tempKey[16];
-  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
-  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
-  snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
-  preferences.begin("sensor_data", false);  // Modo escritura
-  size_t intArraySize = 31 * sizeof(int);
-  // Leer los datos actuales antes de modificar
-  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
-  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
-  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
-  bool updated = false;
-  // Guardar solo si cambió
-  if (substrateData[currentDay - 1] != newSubstrate) {
+void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp) {
+  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {                        // Comprobar si es la hora de guaradar los datos
+    snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
+    snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
+    snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
+    preferences.begin("sensor_data", false);                                                                    // Modo escritura
+    size_t intArraySize = 31 * sizeof(int);
+    if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);       // Leer los datos actuales antes de modificar
+    if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
+    if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
+    bool updated = false;
+    if (substrateData[currentDay - 1] != newSubstrate) {
       substrateData[currentDay - 1] = newSubstrate;
       updated = true;
-  }
-  if (humidityData[currentDay - 1] != newHumidity) {
+    }
+    if (humidityData[currentDay - 1] != newHumidity) {
       humidityData[currentDay - 1] = newHumidity;
       updated = true;
-  }
-  if (tempData[currentDay - 1] != newTemp) {
+    }
+    if (tempData[currentDay - 1] != newTemp) {
       tempData[currentDay - 1] = newTemp;
       updated = true;
-  }
-  if (updated) {  // Escribir solo si hay cambios
+    }
+    if (updated) {                                                                                              // Solo escribir en memoria si hubo cambios
       preferences.putBytes(substrateKey, substrateData, intArraySize);
       preferences.putBytes(humidityKey, humidityData, intArraySize);
       preferences.putBytes(tempKey, tempData, intArraySize);
       Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
-  } else {
+    } else {
       Serial.printf("✅ Datos del día %d no cambiaron, no se guardan.\n", currentDay);
+    }
+    preferences.end();                                                                                          // Cerrar memoria
   }
-  preferences.end();  // Cerrar memoria
 }
 /* Storage Drip Data */
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive) {
@@ -1262,8 +1262,6 @@ void mailMonthData(String message) {
   mailMonthlyData.text.charSet = "us-ascii";
   mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-
-  // 🔹 Intentar conectar y enviar el correo
   if (!smtp.connect(&session)) {
     saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
@@ -1273,8 +1271,6 @@ void mailMonthData(String message) {
   } else {
     Serial.println("✅ Correo mensual enviado con éxito.");
   }
-
-  // 🔹 Liberar memoria y cerrar sesión SMTP
   ESP_MAIL_PRINTF("🛠 Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   smtp.closeSession();
 }
