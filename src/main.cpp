@@ -107,7 +107,8 @@ void checkAndSendEmail();
 //void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute);
 void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp);
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive);
-void verifyStoredData(int day, int month);
+bool verifyStoredData(int day, int month);
+bool verifyDripStored(int day, int month);
 void showMemoryStatus();
 String monthlyMessage(int month);
 void cleanData();   
@@ -728,118 +729,104 @@ void NTPsincro() {
 }
 /* Storage Data Sensors */
 void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp) {
-  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {                        // Comprobar si es la hora de guaradar los datos
-    snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
-    snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
-    snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
-    preferences.begin("sensor_data", false);                                                                    // Modo escritura
-    size_t intArraySize = 31 * sizeof(int);
-    if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);       // Leer los datos actuales antes de modificar
-    if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
-    if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
-    bool updated = false;
-    if (substrateData[currentDay - 1] != newSubstrate) {
-      substrateData[currentDay - 1] = newSubstrate;
-      updated = true;
-    }
-    if (humidityData[currentDay - 1] != newHumidity) {
-      humidityData[currentDay - 1] = newHumidity;
-      updated = true;
-    }
-    if (tempData[currentDay - 1] != newTemp) {
-      tempData[currentDay - 1] = newTemp;
-      updated = true;
-    }
-    if (updated) {                                                                                              // Solo escribir en memoria si hubo cambios
-      preferences.putBytes(substrateKey, substrateData, intArraySize);
-      preferences.putBytes(humidityKey, humidityData, intArraySize);
-      preferences.putBytes(tempKey, tempData, intArraySize);
-      Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
-    } else {
-      Serial.printf("✅ Datos del día %d no cambiaron, no se guardan.\n", currentDay);
-    }
-    preferences.end();                                                                                          // Cerrar memoria
+  // ✅ Asegurar que solo se ejecuta en el minuto exacto en que termina el horario activo
+  if (currentHour != endHour || currentMinute != endMinute) {
+      return;  // Salir si no estamos en el momento exacto de guardado
   }
+  if (verifyStoredData(currentDay, currentMonth)) {
+      Serial.printf("✅ Datos del día %d ya estaban almacenados, no se guardan de nuevo.\n", currentDay);
+      return;  // Salir si ya estaban guardados
+  }
+  char substrateKey[16], humidityKey[16], tempKey[16];
+  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
+  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
+  snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
+  preferences.begin("sensor_data", false);  // Modo escritura
+  size_t intArraySize = 31 * sizeof(int);
+  // Leer antes de modificar
+  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
+  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
+  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
+  // Guardar los datos en el array
+  substrateData[currentDay - 1] = newSubstrate;
+  humidityData[currentDay - 1] = newHumidity;
+  tempData[currentDay - 1] = newTemp;
+  // Guardar en la memoria
+  preferences.putBytes(substrateKey, substrateData, intArraySize);
+  preferences.putBytes(humidityKey, humidityData, intArraySize);
+  preferences.putBytes(tempKey, tempData, intArraySize);
+  Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
+  preferences.end();  // Cerrar memoria
 }
 /* Storage Drip Data */
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive) {
-  if (currentHour > endHour || (currentHour == endHour && currentMinute >= endMinute)) {   
-      char dripKey[16];
-      snprintf(dripKey, sizeof(dripKey), "Drip_%d", currentMonth);
-      preferences.begin("sensor_data", false);  // Modo escritura
-      size_t boolArraySize = 31 * sizeof(bool);
-      // Leer el array antes de modificarlo
-      if (preferences.isKey(dripKey)) {
-          preferences.getBytes(dripKey, dripData, boolArraySize);
-      }
-      // Guardar solo si el valor cambió
-      if (dripData[currentDay - 1] != dripActive) {
-          dripData[currentDay - 1] = dripActive;
-          preferences.putBytes(dripKey, dripData, boolArraySize);
-          Serial.printf("💾 Datos de riego almacenados para el día %d del mes %d: %s\n",
-                        currentDay, currentMonth, dripActive ? "Sí" : "No");
-      } else {
-          Serial.printf("✅ Riego del día %d no cambió, no se guarda.\n", currentDay);
-      }
-      preferences.end();  // Cerrar Preferences
-      counterDripDays = dripActive ? 0 : counterDripDays + 1;
-      lastDayDrip = currentDay;
-      dripActived = false;
-      if (counterDripDays == 25) {  
-          Serial.println("⚠ Advertencia: Han pasado 25 días sin activarse el riego.");
-      }
+  // ✅ Solo se ejecuta en el minuto exacto en que termina el horario activo
+  if (currentHour != endHour || currentMinute != endMinute) {
+      return;  // Salir si no es el momento exacto
+  }
+  if (verifyDripStored(currentDay, currentMonth)) {
+      Serial.printf("✅ Riego del día %d ya estaba almacenado, no se guarda de nuevo.\n", currentDay);
+      return;  // Salir si ya se guardó
+  }
+  char dripKey[16];
+  snprintf(dripKey, sizeof(dripKey), "Drip_%d", currentMonth);
+  preferences.begin("sensor_data", false);  // Modo escritura
+  size_t boolArraySize = 31 * sizeof(bool);
+  // Leer antes de modificar
+  if (preferences.isKey(dripKey)) {
+      preferences.getBytes(dripKey, dripData, boolArraySize);
+  }
+  // Guardar el estado del riego
+  dripData[currentDay - 1] = dripActive;
+  preferences.putBytes(dripKey, dripData, boolArraySize);
+  Serial.printf("💾 Datos de riego almacenados para el día %d del mes %d: %s\n",
+                currentDay, currentMonth, dripActive ? "Sí" : "No");
+  preferences.end();  // Cerrar Preferences
+  // Actualizar contador de días sin riego
+  counterDripDays = dripActive ? 0 : counterDripDays + 1;
+  lastDayDrip = currentDay;
+  dripActived = false;
+  if (counterDripDays == 25) {  
+      Serial.println("⚠ Advertencia: Han pasado 25 días sin activarse el riego.");
   }
 }
-/* Stored Data Verification */
-void verifyStoredData(int day, int month) {
+/* Stored Sensor Data Verification */
+bool verifyStoredData(int day, int month) {
   snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
   snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
   snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
   size_t dataSize = 31 * sizeof(int);
   preferences.begin("sensor_data", true);  // MODO LECTURA
-  bool foundData = false;  // Bandera para saber si hay algún dato en el mes
+  bool foundData = false;  // Bandera para saber si hay datos guardados
+  
   if (preferences.isKey(substrateKey)) {
       preferences.getBytes(substrateKey, substrateData, dataSize);
-      foundData = true;
-  } else {
-      Serial.println("❌ Error: No se encontró el array de higrometría almacenado.");
+      if (substrateData[day - 1] != 0) foundData = true;
   }
   if (preferences.isKey(humidityKey)) {
       preferences.getBytes(humidityKey, humidityData, dataSize);
-      foundData = true;
-  } else if (dhtOk) {
-      Serial.println("❌ Error: No se encontró el array de humedad almacenado.");
+      if (humidityData[day - 1] != 0) foundData = true;
   }
   if (preferences.isKey(tempKey)) {
       preferences.getBytes(tempKey, tempData, dataSize);
-      foundData = true;
-  } else if (dhtOk) {
-      Serial.println("❌ Error: No se encontró el array de temperatura almacenada.");
+      if (tempData[day - 1] != 0) foundData = true;
   }
   preferences.end();  // Cerrar memoria
-  if (!foundData) {  
-      Serial.println("🚨 No hay datos almacenados para este mes.");
-      return;
+  return foundData;  // Devolver si hay datos o no
+}
+/* Stored Drip Verification */
+bool verifyDripStored(int day, int month) {
+  char dripKey[16];
+  snprintf(dripKey, sizeof(dripKey), "Drip_%d", month);
+  size_t boolArraySize = 31 * sizeof(bool);
+  preferences.begin("sensor_data", true);  // Modo lectura
+  bool stored = false;
+  if (preferences.isKey(dripKey)) {
+      preferences.getBytes(dripKey, dripData, boolArraySize);
+      stored = dripData[day - 1];  // Ver si hay datos guardados para ese día
   }
-  if (day < 1 || day > 31) {  
-      Serial.println("❌ Error: Día fuera de rango (1-31).");
-      return;
-  }
-  int lastSubstrate = 0, lastHumidity = 0, lastTemp = 0;
-  for (int i = 0; i < day; i++) {
-      if (substrateData[i] != 0) lastSubstrate = substrateData[i];
-      if (humidityData[i] != 0) lastHumidity = humidityData[i];
-      if (tempData[i] != 0) lastTemp = tempData[i];
-  }
-  Serial.print("✔ Higrometría día "); Serial.print(day); Serial.print(": ");
-  Serial.println(lastSubstrate);
-  if (dhtOk) {
-      Serial.print("✔ Humedad día "); Serial.print(day); Serial.print(": ");
-      Serial.println(lastHumidity);
-      
-      Serial.print("✔ Temperatura día "); Serial.print(day); Serial.print(": ");
-      Serial.println(lastTemp);
-  }
+  preferences.end();  // Cerrar memoria
+  return stored;
 }
 /* Show Memory Status */
 void showMemoryStatus() {
