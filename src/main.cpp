@@ -8,14 +8,14 @@
 #include <HTTPClient.h>
 #include <esp_heap_caps.h> // Biblioteca para obtener detalles de la memoria
 /* WiFi */
-#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
-#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
-//#define SSID "MiFibra-21E0_EXT"
-//#define PASS "2SSxDxcYNh"
+//#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
+//#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
+#define SSID "MiFibra-21E0_EXT"
+#define PASS "2SSxDxcYNh"
 uint32_t idNumber = 0;    // id Smart Drip crc32
 String idSDHex = "";      //id Smart Drip Hexadecimal
-String idSmartDrip = " Salva Terraza ";   //id Smart Drip Usuario
-String idUser = " SalvaG ";   //id usuario
+String idSmartDrip = " Pablo Terraza ";   //id Smart Drip Usuario
+String idUser = " PabloG ";   //id usuario
 const int MAX_CONNECT = 10;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
@@ -51,6 +51,7 @@ void mailActiveSchedule(String message);    // mail horario de riego activo
 void mailNoActiveSchedule(String message);  // mail horario de riego no activo
 void mailMonthData(String message);         // mail datos de riego mensual
 void mailCalibrateSensor();
+void saveMailError(const char* key, String errorMsg);
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
 SMTP_Message mailDripOn;
@@ -99,7 +100,7 @@ String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessag
 int startHour, startMinute, endHour, endMinute;
 int currentHour, currentMinute, currentDay, currentMonth, lastDay, lastDrip, lastDayDrip, counterDripDays;
 int emailSendDay = 1;          // Día del mes en que se enviará el correo
-int emailSendHour = 10;        // Hora del día en que se enviará el correo (formato 24 horas)
+int emailSendHour = 9;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
 void checkAndSendEmail();
@@ -119,6 +120,7 @@ void handleDrip();                 // Método para el manejo de los procesos de 
 void handleScheduleDrip();         // Método para el manedo del riego dentro del horario activo
 void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
 void finalizeDrip();               // Método para el manejo de la finalización del proceso de riego
+String getMonthName(int month);    // Método para obtener el nombre del mes en español
 #define PinHigro 34  // Nueva configuración de pines antes 34. volvemos al pin 34 desde el 13
 #define PinDHT 4     // El pin del sensor DHT tiene q ser el 4 si se trabaja con la biblioteca SimpleDHT
 float temp, humidity = 0;   // Variables para almacenar los datos recibidos del sensor DHT11
@@ -168,7 +170,7 @@ size_t usedHeap = 0;
 /* Drip Control Variables */
 int dripHumidity = 0;                // Indica el límite de humedad del sustrato dentro del proceso de riego
 int dripTimeLimit = 5;               // Duración del riego en minutos
-int dripHumidityLimit = 55;          // Indica el límite de humedad para activar el riego
+int dripHumidityLimit = 45;          // Indica el límite de humedad para activar el riego
 int remainingMinutes = 0;            // Variable para almacenar los minutos restantes de riego
 int remainingSeconds = 0;            // Variable para almacenar los segundos restantes de riego
 unsigned long startDripTime = 0;     // Marca el tiempo de inicio del riego en milisegundos
@@ -195,12 +197,14 @@ void setup() {
     }
     /* Start preferences */
   preferences.begin("sensor_data", true);        
-  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado                         
+  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
+  preferences.end(); 
   /* Creación de ID único */
   createID();
   Serial.print("ID único CRC32: ");
   Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
   idSDHex += String(idNumber, HEX);
+  preferences.begin("sensor_data", true);  
   showErrorMail = preferences.getString("lastMailError", " No mail errors " );
   showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
   preferences.end();     
@@ -856,18 +860,14 @@ void showMemoryStatus() {
 }
 /* Sender Monthly Mail */
 void checkAndSendEmail(){
-  // Comprobar si es el día y la hora configurados para enviar el correo
-  if (currentDay == emailSendDay && currentHour >= emailSendHour && !emailSentToday) {
-    //Envía correo mensual con los datos almacenados
-    dataMonthlyMessage = monthlyMessage(currentMonth);
+  if (currentDay == emailSendDay && currentHour >= emailSendHour && !emailSentToday) {   // Comprobar si es el día y la hora configurados para enviar el correo
+    dataMonthlyMessage = monthlyMessage(currentMonth);                                   //Envía correo mensual con los datos almacenados
     mailMonthData(dataMonthlyMessage);
     Serial.println("Informe mensual enviado");
-    // Marcar que el correo ya fue enviado hoy
-    emailSentToday = true;
-    // Borrar datos guardados
-    cleanData();
+    emailSentToday = true;                                                               // Marcar que el correo ya fue enviado hoy
+    cleanData();                                                                         // Borrar datos guardados
   }
-  if (currentDay != emailSendDay) {       // Si es otro día, restablecer la bandera para permitir envío el próximo més
+  if (currentDay != emailSendDay) {                                                      // Si es otro día, restablecer la bandera para permitir envío el próximo més
     emailSentToday = false;
   }
 }
@@ -923,25 +923,11 @@ void mailStartSystem(){
   mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: ");
-    Serial.println(errorMailConnect);
-    return;
+    saveMailError("erSMTPServ", smtp.errorReason());                                 
+    return; 
   }
   if(!MailClient.sendMail(&smtp, &mailStartSDS)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -949,71 +935,52 @@ void mailStartSystem(){
   smtp.closeSession();
 }
 /* Mail Active Schedule */
-void mailActiveSchedule(String message){
+void mailActiveSchedule(String message) {
   nowTime = rtc.getTime();
   date = rtc.getDate();
   currentMonth = rtc.getMonth() + 1;
-  snprintf(textMsg, sizeof(textMsg),
+  preferences.begin("sensor_data", true);                                          // Leer errores previos de la memoria
+  showErrorMail = preferences.getString("lastMailError", " No mail errors ");
+  showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
+  preferences.end();
+  snprintf(textMsg, sizeof(textMsg),                                               // Construcción del mensaje
            "%s \n%s \n"
            "SmartDrip%s: Inicio de horario activo de riego. \n"
-           "RTC: con fecha: %s\n"
-           "        hora: %s\n"
+           "RTC: con fecha: %s | hora: %s\n"
            "Datos de configuración guardados: \n"
-           "Tiempo de riego: %d min. \n"
-           "Límite de humedad de riego: %d%% \n"
-           "Horario de activación de riego: \n"
-           "Hora de inicio: %s\n"
-           "Hora de fin: %s\n"
-           "Humedad sustrato: %d%% \n"
+           "  - Tiempo de riego: %d min. \n"
+           "  - Límite de humedad: %d%% \n"
+           "  - Horario de riego: %s - %s\n"
+           "  - Humedad sustrato: %d%% \n"
            "Datos almacenados del mes %d:\n%s\n"
            "Estado de la memoria:\n"
-           "  Memoria total: %d bytes\n"
-           "  Memoria usada: %d bytes\n"
-           "  Memoria libre: %d bytes\n",
-           idSDHex.c_str(),                // ID del SD en formato string
-           idUser.c_str(),                 // ID del usuario
-           idSmartDrip.c_str(),            // ID del dispositivo SmartDrip
-           date.c_str(),                   // Fecha del RTC
-           nowTime.c_str(),                // Hora del RTC
-           dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidityLimit,              // Límite de humedad para riego
-           startTime.c_str(),              // Hora de inicio de riego
-           endTime.c_str(),                // Hora de fin de riego
-           substrateHumidity,              // Humedad del sustrato
-           currentMonth,                   // Mes actual añadido al mensaje
-           message.c_str(),                // Datos almacenados de días anteriores del mes
-           totalHeap,                      // Memoria total del ESP32
-           usedHeap,                       // Memoria usada del ESP32
-           freeHeap);                      // Memoria libre del ESP32
-  finalMessage = String(textMsg);
-  mailActivSchedule.text.content = finalMessage.c_str();
-  mailActivSchedule.text.charSet = "us-ascii";
-  mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
-    return;
+           "  - Total: %d bytes\n"
+           "  - Usada: %d bytes\n"
+           "  - Libre: %d bytes\n"
+           "Errores recientes en el envío de correos:\n"
+           "  - Conexión SMTP: %s\n"
+           "  - Envío de correo: %s\n",
+           idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),                      // ID del SD Hexadecimal, ID del usuario y ID del dispositivo SmartDrip
+           date.c_str(), nowTime.c_str(),                                             // Fecha y hora del RTC
+           dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),      // Tiempo de riego, límite de humedad, hora de inicio y fin
+           substrateHumidity, currentMonth, message.c_str(),                          // Humedad del sustrato, mes actual y datos almacenados
+           totalHeap, usedHeap, freeHeap,                                             // Memoria total, usada y libre
+           showErrorMailConnect.c_str(), showErrorMail.c_str());                      // Errores recientes en el envío de correos
+  finalMessage = String(textMsg);                                                     
+  mailActivSchedule.text.content = finalMessage.c_str();                              
+  mailActivSchedule.text.charSet = "us-ascii";                                        
+  mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;     
+  mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal; 
+  if (!smtp.connect(&session)) {                                                      // Intentar conectar al servidor SMTP
+      saveMailError("erSMTPServ", smtp.errorReason());                                 
+      return;                                                                         
+  }                                                                                   
+  if (!MailClient.sendMail(&smtp, &mailActivSchedule)) {                              // Intentar enviar el email
+      saveMailError("lastMailError", smtp.errorReason());
+  } else {
+      Serial.println("✅ Correo enviado con éxito");
   }
-  if(!MailClient.sendMail(&smtp, &mailActivSchedule)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
-  }else{
-    Serial.println("Correo enviado con exito");
-  }
-  ESP_MAIL_PRINTF("Liberar memoria: %d\n", MailClient.getFreeHeap());
+  ESP_MAIL_PRINTF("💾 Memoria libre tras envío: %d\n", MailClient.getFreeHeap());
   smtp.closeSession();
   mailActiveScheduleCheck = true;
 }
@@ -1025,60 +992,37 @@ void mailNoActiveSchedule(String message){
   snprintf(textMsg, sizeof(textMsg),
            "%s \n%s \n"
            "SmartDrip%s: Fuera de horario activo de riego. \n"
-           "RTC: con fecha: %s\n"
-           "        hora: %s\n"
+           "RTC: con fecha: %s | hora: %s\n"
            "Datos de configuración guardados: \n"
-           "Tiempo de riego: %d min. \n"
-           "Límite de humedad de riego: %d%% \n"
-           "Horario de activación de riego: \n"
-           "Hora de inicio: %s\n"
-           "Hora de fin: %s\n"
-           "Humedad sustrato: %d%% \n"
+           "  - Tiempo de riego: %d min. \n"
+           "  - Límite de humedad: %d%% \n"
+           "  - Horario de riego: %s - %s\n"
+           "  - Humedad sustrato: %d%% \n"
            "Datos almacenados del mes %d:\n%s\n"
            "Estado de la memoria:\n"
-           "  Memoria total: %d bytes\n"
-           "  Memoria usada: %d bytes\n"
-           "  Memoria libre: %d bytes\n",
-           idSDHex.c_str(),                // ID del SD en formato string
-           idUser.c_str(),                 // ID del usuario
-           idSmartDrip.c_str(),            // ID del dispositivo SmartDrip
-           date.c_str(),                   // Fecha del RTC
-           nowTime.c_str(),                // Hora del RTC
-           dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidityLimit,              // Límite de humedad para riego
-           startTime.c_str(),              // Hora de inicio de riego
-           endTime.c_str(),                // Hora de fin de riego
-           substrateHumidity,              // Humedad del sustrato
-           currentMonth,                   // Mes actual añadido al mensaje
-           message.c_str(),                // Datos almacenados de días anteriores del mes
-           totalHeap,                      // Memoria total del ESP32
-           usedHeap,                       // Memoria usada del ESP32
-           freeHeap);                      // Memoria libre del ESP32
-  finalMessage = String(textMsg);
+           "  - Total: %d bytes\n"
+           "  - Usada: %d bytes\n"
+           "  - Libre: %d bytes\n"
+           "Errores recientes en el envío de correos:\n"
+           "  - Conexión SMTP: %s\n"
+           "  - Envío de correo: %s\n",
+           idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),                      // ID del SD Hexadecimal, ID del usuario y ID del dispositivo SmartDrip
+           date.c_str(), nowTime.c_str(),                                             // Fecha y hora del RTC
+           dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),      // Tiempo de riego, límite de humedad, hora de inicio y fin
+           substrateHumidity, currentMonth, message.c_str(),                          // Humedad del sustrato, mes actual y datos almacenados
+           totalHeap, usedHeap, freeHeap,                                             // Memoria total, usada y libre
+           showErrorMailConnect.c_str(), showErrorMail.c_str());                      // Errores recientes en el envío de correos
+  finalMessage = String(textMsg);                         
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
   mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1111,25 +1055,11 @@ void mailSmartDripOn(){
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailDripOn)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1162,25 +1092,11 @@ void mailSmartDripOff(){
   mailDripOff.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOff.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailDripOff)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1205,25 +1121,11 @@ void mailErrorValve(){
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrValve)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1246,25 +1148,11 @@ void mailErrorDHT11(){
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura         
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1288,25 +1176,11 @@ void mailErrorSensorHigro(){
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1329,25 +1203,11 @@ void mailCalibrateSensor(){
   mailCalibratSensor.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailCalibratSensor.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura         
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailCalibratSensor)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura         
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
+    saveMailError("lastMailError", smtp.errorReason());
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1378,55 +1238,70 @@ void smtpCallback(SMTP_Status status){
   }
 }
 /* Mail Monthly Data */
-void mailMonthData(String message){
+void mailMonthData(String message) {
   date = rtc.getDate();
   nowTime = rtc.getHour();
+  int prevMonth = currentMonth - 1;          // Obtener el mes anterior al actual
+  if (prevMonth == 0) prevMonth = 12;        
   snprintf(textMsg, sizeof(textMsg),
-           "%s \n%s \n"
-           "Mensaje mensual de comprobación de humedades del sustrato del Smart Drip %s \n"
-           "con fecha %s los datos son: \n"
+           "📩 *Informe mensual de Smart Drip*\n\n"
+           "📌 **Dispositivo:** %s\n"
+           "👤 **Usuario:** %s\n"
+           "🔢 **ID Smart Drip:** %s\n"
+           "📅 **Fecha de envío:** %s\n"
+           "📊 **Datos correspondientes a:** %s\n\n"
            "%s\n",
-           idSDHex.c_str(),        // ID del SD
-           idUser.c_str(),         // ID del usuario
-           idSmartDrip.c_str(),    // ID del Smart Drip
-           date.c_str(),           // Fecha
-           message.c_str());       // Mensaje mensual con los datos
-  finalMessage = String(textMsg);
+           idSDHex.c_str(),                  // ID del SD
+           idUser.c_str(),                   // ID del usuario
+           idSmartDrip.c_str(),              // ID del Smart Drip
+           date.c_str(),                     // Fecha del envío
+           getMonthName(prevMonth).c_str(),  // Nombre del mes anterior
+           message.c_str());                 // Mensaje mensual con los datos
+  finalMessage = String(textMsg);            // Convertir a String para el envío
   mailMonthlyData.text.content = finalMessage.c_str();
   mailMonthlyData.text.charSet = "us-ascii";
   mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    snprintf(errorMailConnect, sizeof(errorMailConnect),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("erSMTPSer", errorMailConnect);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.print("Error conectando al servidor SMTP: \n");
-    Serial.println(errorMailConnect);
+
+  // 🔹 Intentar conectar y enviar el correo
+  if (!smtp.connect(&session)) {
+    saveMailError("erSMTPServ", smtp.errorReason());                                   
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailMonthlyData)){
-    snprintf(errorMail, sizeof(errorMail),
-         "%s\n%s\n El sistema reporta el siguiente error: \n %s",
-         date, nowTime, smtp.errorReason().c_str());
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putString("lastMailError", errorMail);
-    preferences.end();  // Cierra Preferences después de guardar los datos
-    Serial.println("Error envío Email: ");
-    Serial.println(errorMail);
-  }else{
-    Serial.println("Correo enviado con exito");
+  if (!MailClient.sendMail(&smtp, &mailMonthlyData)) {
+    saveMailError("lastMailError", smtp.errorReason());
+  } else {
+    Serial.println("✅ Correo mensual enviado con éxito.");
   }
-  ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
+
+  // 🔹 Liberar memoria y cerrar sesión SMTP
+  ESP_MAIL_PRINTF("🛠 Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   smtp.closeSession();
+}
+/* Get Month Name */
+String getMonthName(int month) {
+  const char* months[] = {"Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                          "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"};
+  return (month >= 1 && month <= 12) ? String(months[month - 1]) : "Desconocido";
+}
+/* Save SMTP errors in memory */
+void saveMailError(const char *key, String newError) {
+  preferences.begin("sensor_data", false);             // Modo escritura
+  String storedError = preferences.getString(key, ""); // Leer el error previo almacenado
+  if (storedError != newError) {                       // Guardar solo si el nuevo error es diferente del anterior
+      preferences.putString(key, newError);
+      Serial.println("⚠ Nuevo error guardado en memoria:");
+      Serial.println(newError);
+  } else {
+      Serial.println("⚠ Error detectado, pero ya estaba registrado. No se sobrescribe.");
+  }
+  preferences.end();  // Cerrar memoria
 }
 /* Clean Data Preferences */
 void cleanData(){
   preferences.begin("sensor_data", false);  // Modo escritura
   for(int i = 1; i <= 31; i++){
-     snprintf(key, sizeof(key), "Higro_day%d", i);
+    snprintf(key, sizeof(key), "Higro_day%d", i);
     preferences.remove(key);
     snprintf(key, sizeof(key), "Humedad_day%d", i);
     preferences.remove(key);
@@ -1435,5 +1310,10 @@ void cleanData(){
     snprintf(key, sizeof(key), "Riego_day%d", i);
     preferences.remove(key);
   }
-  preferences.end();  // Cierra Preferences después de eliminar los datos
+  preferences.end();                                                                // Cierra Preferences después de eliminar los datos
+  memset(substrateData, 0, sizeof(substrateData));                                  // Reiniciar los arrays en RAM para evitar residuos
+  memset(humidityData, 0, sizeof(humidityData));
+  memset(tempData, 0, sizeof(tempData));
+  memset(dripData, 0, sizeof(dripData));
+  Serial.println("🗑 Datos eliminados de Preferences y arrays reiniciados en RAM.");
 }
