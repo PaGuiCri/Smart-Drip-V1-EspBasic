@@ -155,9 +155,7 @@ bool isWithinSchedule(int currentHour, int currentMinute);
 Preferences preferences;
 char key[20], substrateKey[20], humidityKey[20], tempKey[20], dripKey[20], dayKeyHigro[20], dayKeyHum[20], dayKeyTemp[20], dayKeyRiego[20], emailBuffer[4100], lineBuffer[128];
 bool dripData[31] = {false};
-int substrateData[31] = {0};
-int humidityData[31] = {0};
-int tempData[31] = {0};
+int substrateData[31], humidityData[31], tempData[31];
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 size_t freeHeap = 0;
@@ -688,7 +686,6 @@ void saveLastSyncTime(time_t timestamp) {
   preferences.putULong64("lastSync", timestamp);  // Guarda el timestamp en NVS
   preferences.end(); 
 }
-
 /* Function to retrieve the last synchronized time from NVS memory */
 time_t getLastSyncTime() {
   preferences.begin("sensor_data", true);                   // Modo lectura (true)
@@ -700,14 +697,13 @@ time_t getLastSyncTime() {
 void NTPsincro() {
   struct tm timeinfo;                                             // Estructura para almacenar la hora obtenida de NTP
   Serial.println("Intentando sincronizar con NTP...");
-  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "es.pool.ntp.org");  // Configurar zona horaria de España (M3.5.0 = último domingo de marzo, M10.5.0/3 = último domingo de octubre)
+  configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "hora.roa.es", "ntp.ign.es", "es.pool.ntp.org");          // Configurar zona horaria de España (M3.5.0 = último domingo de marzo, M10.5.0/3 = último domingo de octubre)
   int attempts = 0;                                               // Contador de intentos
   const int maxAttempts = 5;                                      // Máximo número de intentos para sincronizar
   while (attempts < maxAttempts) {                                // Intentar obtener la hora desde el servidor NTP
       if (getLocalTime(&timeinfo)) {                              // Si la hora se obtiene correctamente...
           Serial.println("✔ Hora sincronizada con NTP:");
           Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-
           rtc.setTimeStruct(timeinfo);                            // Configurar el RTC interno con la nueva hora
           time_t nowTime = rtc.getEpoch();                        // Obtener la hora actual en formato epoch
           saveLastSyncTime(nowTime);                              // Guardar la hora sincronizada en NVS
@@ -735,6 +731,7 @@ void storeDailyData(int currentDay, int currentMonth, int currentHour, int curre
   }
   if (verifyStoredData(currentDay, currentMonth)) {
       Serial.printf("✅ Datos del día %d ya estaban almacenados, no se guardan de nuevo.\n", currentDay);
+      showMemoryStatus();
       return;  // Salir si ya estaban guardados
   }
   char substrateKey[16], humidityKey[16], tempKey[16];
@@ -757,6 +754,7 @@ void storeDailyData(int currentDay, int currentMonth, int currentHour, int curre
   preferences.putBytes(tempKey, tempData, intArraySize);
   Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
   preferences.end();  // Cerrar memoria
+  showMemoryStatus();
 }
 /* Storage Drip Data */
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive) {
@@ -798,18 +796,17 @@ bool verifyStoredData(int day, int month) {
   size_t dataSize = 31 * sizeof(int);
   preferences.begin("sensor_data", true);  // MODO LECTURA
   bool foundData = false;  // Bandera para saber si hay datos guardados
-  
   if (preferences.isKey(substrateKey)) {
       preferences.getBytes(substrateKey, substrateData, dataSize);
-      if (substrateData[day - 1] != 0) foundData = true;
+      if (substrateData[day - 1] != -100) foundData = true;
   }
   if (preferences.isKey(humidityKey)) {
       preferences.getBytes(humidityKey, humidityData, dataSize);
-      if (humidityData[day - 1] != 0) foundData = true;
+      if (humidityData[day - 1] != -100) foundData = true;
   }
   if (preferences.isKey(tempKey)) {
       preferences.getBytes(tempKey, tempData, dataSize);
-      if (tempData[day - 1] != 0) foundData = true;
+      if (tempData[day - 1] != -100) foundData = true;
   }
   preferences.end();  // Cerrar memoria
   return foundData;  // Devolver si hay datos o no
@@ -862,6 +859,12 @@ void checkAndSendEmail(){
 String monthlyMessage(int month) {
   preferences.begin("sensor_data", true);
   emailBuffer[0] = '\0';
+  for (int i = 0; i < 31; i++) {
+    substrateData[i] = -100;
+    humidityData[i] = -100;
+    tempData[i] = -100;
+    dripData[i] = false;
+  }
   snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
   snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
   snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
@@ -878,7 +881,7 @@ String monthlyMessage(int month) {
       if (substrateData[day - 1] != 0) lastSubstrate = substrateData[day - 1];
       if (humidityData[day - 1] != 0) lastHumidity = humidityData[day - 1];
       if (tempData[day - 1] != 0) lastTemp = tempData[day - 1];
-      bool hasData = lastSubstrate != 0 || lastHumidity != 0 || lastTemp != 0 || dripData[day - 1];
+      bool hasData = (lastSubstrate != -100) || (lastHumidity != -100) || (lastTemp != -100) || dripData[day - 1];
       if (!hasData) continue;
       snprintf(lineBuffer, sizeof(lineBuffer),
                "Día %d: Riego: %s | Humedad sustrato: %d%% | Humedad ambiental: %d%% | Temp: %d°C\n",
