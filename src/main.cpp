@@ -49,7 +49,7 @@ void mailErrorDHT11();                      // mail error en sensor DHT11
 void mailErrorSensorHigro();                // mail error en sensor higrometro
 void mailActiveSchedule(String message);    // mail horario de riego activo
 void mailNoActiveSchedule(String message);  // mail horario de riego no activo
-void mailMonthData(String message);         // mail datos de riego mensual
+bool mailMonthData(String message);         // mail datos de riego mensual
 void mailCalibrateSensor();
 void saveMailError(const char* key, String errorMsg);
 ESP_Mail_Session session;
@@ -98,13 +98,12 @@ String startTime = "08:00";
 String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
-int currentHour, currentMinute, currentDay, currentMonth, lastDay, lastDrip, lastDayDrip, counterDripDays;
-int emailSendDay = 1;          // Día del mes en que se enviará el correo
+int currentHour, currentMinute, currentDay, currentMonth, currentYear, lastDay, lastDrip, lastDayDrip, counterDripDays;
 int emailSendHour = 9;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
 void extractTimeValues();
+int getLastDayOfMonth(int month, int year);
 void checkAndSendEmail();
-//void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute);
 void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp);
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive);
 bool verifyStoredData(int day, int month);
@@ -326,10 +325,11 @@ void loop() {
 }
 /* Get Time */
 void extractTimeValues() {
-  currentHour = rtc.getHour(true); // Obtenemos la hora actual, sólo el dato de la hora (0-23). True para formato 24h  
-  currentMinute = rtc.getMinute(); // Obtenemos los minutos actuales
-  currentDay = rtc.getDay();       // Obtenemos el número de día del mes (1-31)
-  currentMonth = rtc.getMonth() + 1;   // Obtenemos el número de mes (1-12)
+  currentHour = rtc.getHour(true);            // Obtenemos la hora actual, sólo el dato de la hora (0-23). True para formato 24h  
+  currentMinute = rtc.getMinute();            // Obtenemos los minutos actuales
+  currentDay = rtc.getDay();                  // Obtenemos el número de día del mes (1-31)
+  currentMonth = rtc.getMonth() + 1;          // Obtenemos el número de mes (1-12)
+  currentYear = rtc.getYear();                // Obtenemos el año actual
   startHourStr = startTime.substring(0, 2);
   startMinuteStr = startTime.substring(3, 5);
   endHourStr = endTime.substring(0, 2);
@@ -843,28 +843,55 @@ void showMemoryStatus() {
   Serial.println("--------------------------------");
 }
 /* Sender Monthly Mail */
-void checkAndSendEmail(){
-  if (currentDay == emailSendDay && currentHour >= emailSendHour && !emailSentToday) {   // Comprobar si es el día y la hora configurados para enviar el correo
-    dataMonthlyMessage = monthlyMessage(currentMonth);                                   //Envía correo mensual con los datos almacenados
-    mailMonthData(dataMonthlyMessage);
-    Serial.println("Informe mensual enviado");
-    emailSentToday = true;                                                               // Marcar que el correo ya fue enviado hoy
-    cleanData();                                                                         // Borrar datos guardados
+void checkAndSendEmail() {
+  int lastDayOfMonth = getLastDayOfMonth(currentMonth, currentYear);
+  if (currentDay == lastDayOfMonth && currentHour > endHour && !emailSentToday) { // falta preveer si es la ultima hora del dia nunca detectara una hora mayor
+      dataMonthlyMessage = monthlyMessage(currentMonth);
+      if (mailMonthData(dataMonthlyMessage)) {  // ✅ Solo borrar datos si el envío fue exitoso
+          Serial.println("✅ Informe mensual enviado con éxito");
+          cleanData();
+          Serial.println("🗑 Datos eliminados después del informe mensual");
+      } else {
+          Serial.println("⚠️ Error en el envío del informe mensual, datos no eliminados");
+      }
+      emailSentToday = true;  
   }
-  if (currentDay != emailSendDay) {                                                      // Si es otro día, restablecer la bandera para permitir envío el próximo més
-    emailSentToday = false;
+  if (currentDay != lastDayOfMonth) {  
+      emailSentToday = false;
+  }
+}
+/* Get Last Day of the Month */
+int getLastDayOfMonth(int month, int year) {
+  switch (month) {
+      case 1: case 3: case 5: case 7: case 8: case 10: case 12:
+          return 31;
+      case 4: case 6: case 9: case 11:
+          return 30;
+      case 2: // Verificamos si es un año bisiesto
+          return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28;
+      default:
+          return 30;  // Fallback (no debería ocurrir)
   }
 }
 /* Monthly Data Message Maker */
 String monthlyMessage(int month) {
   preferences.begin("sensor_data", true);
   emailBuffer[0] = '\0';
+  // Obtener el día actual
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("❌ Error obteniendo la hora.");
+    return "";
+  }
+  int today = timeinfo.tm_mday;  // Día actual
+  // Inicializar arrays con -100 y false
   for (int i = 0; i < 31; i++) {
     substrateData[i] = -100;
     humidityData[i] = -100;
     tempData[i] = -100;
     dripData[i] = false;
   }
+  // Leer datos almacenados
   snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
   snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
   snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
@@ -876,11 +903,13 @@ String monthlyMessage(int month) {
   if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
   if (preferences.isKey(dripKey)) preferences.getBytes(dripKey, dripData, boolArraySize);
   preferences.end();
-  int lastSubstrate = 0, lastHumidity = 0, lastTemp = 0;
-  for (int day = 1; day <= 31; day++) {
-      if (substrateData[day - 1] != 0) lastSubstrate = substrateData[day - 1];
-      if (humidityData[day - 1] != 0) lastHumidity = humidityData[day - 1];
-      if (tempData[day - 1] != 0) lastTemp = tempData[day - 1];
+  // Variables de último valor válido
+  int lastSubstrate = -100, lastHumidity = -100, lastTemp = -100;
+  for (int day = 1; day <= today; day++) {  // 🔥 Solo hasta el día actual
+      if (substrateData[day - 1] != -100) lastSubstrate = substrateData[day - 1];
+      if (humidityData[day - 1] != -100) lastHumidity = humidityData[day - 1];
+      if (tempData[day - 1] != -100) lastTemp = tempData[day - 1];
+      // Verificar si hay datos
       bool hasData = (lastSubstrate != -100) || (lastHumidity != -100) || (lastTemp != -100) || dripData[day - 1];
       if (!hasData) continue;
       snprintf(lineBuffer, sizeof(lineBuffer),
@@ -1228,7 +1257,7 @@ void smtpCallback(SMTP_Status status){
   }
 }
 /* Mail Monthly Data */
-void mailMonthData(String message) {
+bool mailMonthData(String message) {
   date = rtc.getDate();
   nowTime = rtc.getHour();
   int prevMonth = currentMonth - 1;          // Obtener el mes anterior al actual
@@ -1254,15 +1283,17 @@ void mailMonthData(String message) {
   mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
     saveMailError("erSMTPServ", smtp.errorReason());                                   
-    return;
+    return false;  // ❌ Falló la conexión SMTP
   }
   if (!MailClient.sendMail(&smtp, &mailMonthlyData)) {
     saveMailError("lastMailError", smtp.errorReason());
+    return false;  // ❌ Falló el envío del correo
   } else {
     Serial.println("✅ Correo mensual enviado con éxito.");
   }
   ESP_MAIL_PRINTF("🛠 Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   smtp.closeSession();
+  return true;  // ✅ Envío exitoso
 }
 /* Get Month Name */
 String getMonthName(int month) {
@@ -1297,9 +1328,9 @@ void cleanData(){
     preferences.remove(key);
   }
   preferences.end();                                                                // Cierra Preferences después de eliminar los datos
-  memset(substrateData, 0, sizeof(substrateData));                                  // Reiniciar los arrays en RAM para evitar residuos
-  memset(humidityData, 0, sizeof(humidityData));
-  memset(tempData, 0, sizeof(tempData));
-  memset(dripData, 0, sizeof(dripData));
+  memset(substrateData, -100, sizeof(substrateData));                                  // Reiniciar los arrays en RAM para evitar residuos
+  memset(humidityData, -100, sizeof(humidityData));
+  memset(tempData, -100, sizeof(tempData));
+  memset(dripData, false, sizeof(dripData));
   Serial.println("🗑 Datos eliminados de Preferences y arrays reiniciados en RAM.");
 }
