@@ -330,7 +330,7 @@ void extractTimeValues() {
   currentDay = rtc.getDay();                  // Obtenemos el número de día del mes (1-31)
   currentMonth = rtc.getMonth() + 1;          // Obtenemos el número de mes (1-12)
   currentYear = rtc.getYear();                // Obtenemos el año actual
-  startHourStr = startTime.substring(0, 2);
+  startHourStr = startTime.substring(0, 2);   
   startMinuteStr = startTime.substring(3, 5);
   endHourStr = endTime.substring(0, 2);
   endMinuteStr = endTime.substring(3, 5);
@@ -844,8 +844,10 @@ void showMemoryStatus() {
 }
 /* Sender Monthly Mail */
 void checkAndSendEmail() {
+  int currentTotalMinutes = currentHour * 60 + currentMinute;
+  int endTotalMinutes = endHour * 60 + endMinute;
   int lastDayOfMonth = getLastDayOfMonth(currentMonth, currentYear);
-  if (currentDay == lastDayOfMonth && currentHour > endHour && !emailSentToday) { // falta preveer si es la ultima hora del dia nunca detectara una hora mayor
+  if (currentDay == lastDayOfMonth && currentTotalMinutes > endTotalMinutes && !emailSentToday) { 
       dataMonthlyMessage = monthlyMessage(currentMonth);
       if (mailMonthData(dataMonthlyMessage)) {  // ✅ Solo borrar datos si el envío fue exitoso
           Serial.println("✅ Informe mensual enviado con éxito");
