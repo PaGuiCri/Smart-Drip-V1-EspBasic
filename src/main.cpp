@@ -108,6 +108,7 @@ void storeDailyData(int currentDay, int currentMonth, int currentHour, int curre
 void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive);
 bool verifyStoredData(int day, int month);
 bool verifyDripStored(int day, int month);
+void backupStoreIfMissed(int currentDay, int currentMonth, int currentHour, int currentMinute);
 void showMemoryStatus();
 String monthlyMessage(int month);
 void cleanData();   
@@ -152,9 +153,17 @@ bool withinSchedule = false;
 bool isWithinSchedule(int currentHour, int currentMinute);
 /* Instance to store in flash memory */
 Preferences preferences;
-char key[20], substrateKey[20], humidityKey[20], tempKey[20], dripKey[20], dayKeyHigro[20], dayKeyHum[20], dayKeyTemp[20], dayKeyRiego[20], emailBuffer[4100], lineBuffer[128];
+char key[20], substrateKey[20], humidityKey[20], tempKey[20], dripKey[20], dayKeyHigro[20], dayKeyHum[20], dayKeyTemp[20], dayKeyRiego[20], emailBuffer[4100], lineBuffer[128], flagSensorKey[20], flagDripKey[20];
 bool dripData[31] = {false};
+bool dataStoredFlag[31], dripStoredFlag[31];
 int substrateData[31], humidityData[31], tempData[31];
+void inicializarDatos() {
+  for (int i = 0; i < 31; i++) {
+      substrateData[i] = -100;
+      humidityData[i] = -100;
+      tempData[i] = -100;
+  }
+}
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 size_t freeHeap = 0;
@@ -187,6 +196,7 @@ unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
 void setup() {
   Serial.begin(9600);
+  inicializarDatos();
    if (!SPIFFS.begin(true)) {
         Serial.println("No se pudo montar SPIFFS, se requiere formateo.");
     } else {
@@ -303,6 +313,9 @@ void loop() {
   /* Almacenar datos en NVS */
   storeDailyData(currentDay, currentMonth, currentHour, currentMinute, substrateHumidity, humidity, temp);
   storeDripData(currentDay, currentMonth, currentHour, currentMinute, dripActived);
+  if (currentHour > endHour || (currentHour == endHour && currentMinute > endMinute)) {
+    backupStoreIfMissed(currentDay, currentMonth, currentHour, currentMinute);
+  }
   /* Comprobacion y envío de mail mensual con los datos almacenados */
   checkAndSendEmail();
   /* Comprobación de horario activo */
@@ -734,24 +747,28 @@ void storeDailyData(int currentDay, int currentMonth, int currentHour, int curre
       showMemoryStatus();
       return;  // Salir si ya estaban guardados
   }
-  char substrateKey[16], humidityKey[16], tempKey[16];
   snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
   snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
   snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
+  snprintf(flagSensorKey, sizeof(flagSensorKey), "FlagSens_%d", currentMonth);
   preferences.begin("sensor_data", false);  // Modo escritura
   size_t intArraySize = 31 * sizeof(int);
+  size_t boolArraySize = 31 * sizeof(bool);
   // Leer antes de modificar
   if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
   if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
   if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
+  if (preferences.isKey(flagSensorKey)) preferences.getBytes(flagSensorKey, dataStoredFlag, boolArraySize);
   // Guardar los datos en el array
   substrateData[currentDay - 1] = newSubstrate;
   humidityData[currentDay - 1] = newHumidity;
   tempData[currentDay - 1] = newTemp;
+  dataStoredFlag[currentDay - 1] = true;
   // Guardar en la memoria
   preferences.putBytes(substrateKey, substrateData, intArraySize);
   preferences.putBytes(humidityKey, humidityData, intArraySize);
   preferences.putBytes(tempKey, tempData, intArraySize);
+  preferences.putBytes(flagSensorKey, dataStoredFlag, boolArraySize);
   Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
   preferences.end();  // Cerrar memoria
   showMemoryStatus();
@@ -768,15 +785,17 @@ void storeDripData(int currentDay, int currentMonth, int currentHour, int curren
   }
   char dripKey[16];
   snprintf(dripKey, sizeof(dripKey), "Drip_%d", currentMonth);
+  snprintf(flagDripKey, sizeof(flagDripKey), "FlagDrip_%d", currentMonth);
   preferences.begin("sensor_data", false);  // Modo escritura
   size_t boolArraySize = 31 * sizeof(bool);
   // Leer antes de modificar
-  if (preferences.isKey(dripKey)) {
-      preferences.getBytes(dripKey, dripData, boolArraySize);
-  }
+  if (preferences.isKey(dripKey)) preferences.getBytes(dripKey, dripData, boolArraySize);
+  if (preferences.isKey(flagDripKey)) preferences.getBytes(flagDripKey, dripStoredFlag, boolArraySize);
   // Guardar el estado del riego
   dripData[currentDay - 1] = dripActive;
+  dripStoredFlag[currentDay - 1] = true;
   preferences.putBytes(dripKey, dripData, boolArraySize);
+  preferences.putBytes(flagDripKey, dripStoredFlag, boolArraySize);
   Serial.printf("💾 Datos de riego almacenados para el día %d del mes %d: %s\n",
                 currentDay, currentMonth, dripActive ? "Sí" : "No");
   preferences.end();  // Cerrar Preferences
@@ -860,6 +879,20 @@ void checkAndSendEmail() {
   }
   if (currentDay != lastDayOfMonth) {  
       emailSentToday = false;
+  }
+}
+void backupStoreIfMissed(int currentDay, int currentMonth, int currentHour, int currentMinute) {
+  if (!verifyStoredData(currentDay, currentMonth)) {
+      Serial.println("⚠️ No se detectaron datos de sensores guardados hoy. Guardando valores actuales...");
+      getHigroValues();
+      getDHTValues();
+      storeDailyData(currentDay, currentMonth, currentHour, currentMinute, substrateHumidity, humidity, temp);
+  }
+
+  if (!verifyDripStored(currentDay, currentMonth)) {
+      Serial.println("⚠️ No se detectó estado de riego guardado hoy. Guardando estado actual...");
+      bool drip = dripActived;
+      storeDripData(currentDay, currentMonth, currentHour, currentMinute, drip);
   }
 }
 /* Get Last Day of the Month */
@@ -964,29 +997,38 @@ void mailActiveSchedule(String message) {
   showErrorMail = preferences.getString("lastMailError", " No mail errors ");
   showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
   preferences.end();
+  bool sensoresGuardados = verifyStoredData(currentDay, currentMonth);
+  bool riegoGuardado = verifyDripStored(currentDay, currentMonth);
   snprintf(textMsg, sizeof(textMsg),                                               // Construcción del mensaje
            "%s \n%s \n"
            "SmartDrip%s: Inicio de horario activo de riego. \n"
            "RTC: con fecha: %s | hora: %s\n"
            "Datos de configuración guardados: \n"
-           "  - Tiempo de riego: %d min. \n"
-           "  - Límite de humedad: %d%% \n"
-           "  - Horario de riego: %s - %s\n"
-           "  - Humedad sustrato: %d%% \n"
-           "Datos almacenados del mes %d:\n%s\n"
-           "Estado de la memoria:\n"
-           "  - Total: %d bytes\n"
-           "  - Usada: %d bytes\n"
-           "  - Libre: %d bytes\n"
-           "Errores recientes en el envío de correos:\n"
-           "  - Conexión SMTP: %s\n"
-           "  - Envío de correo: %s\n",
-           idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),                      // ID del SD Hexadecimal, ID del usuario y ID del dispositivo SmartDrip
-           date.c_str(), nowTime.c_str(),                                             // Fecha y hora del RTC
-           dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),      // Tiempo de riego, límite de humedad, hora de inicio y fin
-           substrateHumidity, currentMonth, message.c_str(),                          // Humedad del sustrato, mes actual y datos almacenados
-           totalHeap, usedHeap, freeHeap,                                             // Memoria total, usada y libre
-           showErrorMailConnect.c_str(), showErrorMail.c_str());                      // Errores recientes en el envío de correos
+         "  - Tiempo de riego: %d min. \n"
+         "  - Límite de humedad: %d%% \n"
+         "  - Horario de riego: %s - %s\n"
+         "  - Humedad sustrato: %d%% \n"
+         "Datos del día %d:\n"
+         "  - Sensores: %s\n"
+         "  - Riego: %s\n\n"
+         "Datos almacenados del mes %d:\n%s\n"
+         "Estado de la memoria:\n"
+         "  - Total: %d bytes\n"
+         "  - Usada: %d bytes\n"
+         "  - Libre: %d bytes\n"
+         "Errores recientes en el envío de correos:\n"
+         "  - Conexión SMTP: %s\n"
+         "  - Envío de correo: %s\n",
+         idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),
+         date.c_str(), nowTime.c_str(),
+         dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),
+         substrateHumidity,
+         currentDay,
+         sensoresGuardados ? "Sí" : "No",
+         riegoGuardado ? "Sí" : "No",
+         currentMonth, message.c_str(),
+         totalHeap, usedHeap, freeHeap,
+         showErrorMailConnect.c_str(), showErrorMail.c_str());
   finalMessage = String(textMsg);                                                     
   mailActivSchedule.text.content = finalMessage.c_str();                              
   mailActivSchedule.text.charSet = "us-ascii";                                        
@@ -1010,29 +1052,38 @@ void mailNoActiveSchedule(String message){
   nowTime = rtc.getTime();
   date = rtc.getDate();
   currentMonth = rtc.getMonth() + 1;
+  bool sensoresGuardados = verifyStoredData(currentDay, currentMonth);
+  bool riegoGuardado = verifyDripStored(currentDay, currentMonth);
   snprintf(textMsg, sizeof(textMsg),
-           "%s \n%s \n"
-           "SmartDrip%s: Fuera de horario activo de riego. \n"
-           "RTC: con fecha: %s | hora: %s\n"
-           "Datos de configuración guardados: \n"
-           "  - Tiempo de riego: %d min. \n"
-           "  - Límite de humedad: %d%% \n"
-           "  - Horario de riego: %s - %s\n"
-           "  - Humedad sustrato: %d%% \n"
-           "Datos almacenados del mes %d:\n%s\n"
-           "Estado de la memoria:\n"
-           "  - Total: %d bytes\n"
-           "  - Usada: %d bytes\n"
-           "  - Libre: %d bytes\n"
-           "Errores recientes en el envío de correos:\n"
-           "  - Conexión SMTP: %s\n"
-           "  - Envío de correo: %s\n",
-           idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),                      // ID del SD Hexadecimal, ID del usuario y ID del dispositivo SmartDrip
-           date.c_str(), nowTime.c_str(),                                             // Fecha y hora del RTC
-           dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),      // Tiempo de riego, límite de humedad, hora de inicio y fin
-           substrateHumidity, currentMonth, message.c_str(),                          // Humedad del sustrato, mes actual y datos almacenados
-           totalHeap, usedHeap, freeHeap,                                             // Memoria total, usada y libre
-           showErrorMailConnect.c_str(), showErrorMail.c_str());                      // Errores recientes en el envío de correos
+         "%s \n%s \n"
+         "SmartDrip%s: Fuera de horario activo de riego. \n"
+         "RTC: con fecha: %s | hora: %s\n"
+         "Datos de configuración guardados: \n"
+         "  - Tiempo de riego: %d min. \n"
+         "  - Límite de humedad: %d%% \n"
+         "  - Horario de riego: %s - %s\n"
+         "  - Humedad sustrato: %d%% \n"
+         "Datos del día %d:\n"
+         "  - Sensores: %s\n"
+         "  - Riego: %s\n\n"
+         "Datos almacenados del mes %d:\n%s\n"
+         "Estado de la memoria:\n"
+         "  - Total: %d bytes\n"
+         "  - Usada: %d bytes\n"
+         "  - Libre: %d bytes\n"
+         "Errores recientes en el envío de correos:\n"
+         "  - Conexión SMTP: %s\n"
+         "  - Envío de correo: %s\n",
+         idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),
+         date.c_str(), nowTime.c_str(),
+         dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),
+         substrateHumidity,
+         currentDay,
+         sensoresGuardados ? "Sí" : "No",
+         riegoGuardado ? "Sí" : "No",
+         currentMonth, message.c_str(),
+         totalHeap, usedHeap, freeHeap,
+         showErrorMailConnect.c_str(), showErrorMail.c_str());
   finalMessage = String(textMsg);                         
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
@@ -1317,22 +1368,30 @@ void saveMailError(const char *key, String newError) {
   preferences.end();  // Cerrar memoria
 }
 /* Clean Data Preferences */
-void cleanData(){
+void cleanData() {
   preferences.begin("sensor_data", false);  // Modo escritura
-  for(int i = 1; i <= 31; i++){
-    snprintf(key, sizeof(key), "Higro_day%d", i);
-    preferences.remove(key);
-    snprintf(key, sizeof(key), "Humedad_day%d", i);
-    preferences.remove(key);
-    snprintf(key, sizeof(key), "Temp_day%d", i);
-    preferences.remove(key);
-    snprintf(key, sizeof(key), "Riego_day%d", i);
-    preferences.remove(key);
-  }
-  preferences.end();                                                                // Cierra Preferences después de eliminar los datos
-  memset(substrateData, -100, sizeof(substrateData));                                  // Reiniciar los arrays en RAM para evitar residuos
+  // Eliminar arrays mensuales por clave (basado en mes actual)
+  char key[20];
+  snprintf(key, sizeof(key), "Higro_%d", currentMonth);
+  preferences.remove(key);
+  snprintf(key, sizeof(key), "Humedad_%d", currentMonth);
+  preferences.remove(key);
+  snprintf(key, sizeof(key), "Temp_%d", currentMonth);
+  preferences.remove(key);
+  snprintf(key, sizeof(key), "Drip_%d", currentMonth);
+  preferences.remove(key);
+  snprintf(key, sizeof(key), "FlagSens_%d", currentMonth);
+  preferences.remove(key);
+  snprintf(key, sizeof(key), "FlagDrip_%d", currentMonth);
+  preferences.remove(key);
+  preferences.end();
+  // Resetear arrays en RAM
+  memset(substrateData, -100, sizeof(substrateData));
   memset(humidityData, -100, sizeof(humidityData));
   memset(tempData, -100, sizeof(tempData));
   memset(dripData, false, sizeof(dripData));
-  Serial.println("🗑 Datos eliminados de Preferences y arrays reiniciados en RAM.");
+  memset(dataStoredFlag, false, sizeof(dataStoredFlag));
+  memset(dripStoredFlag, false, sizeof(dripStoredFlag));
+  Serial.printf("🗑 Datos del mes %d eliminados de Preferences.\n", currentMonth);
+  Serial.println("🔄 Arrays reiniciados en RAM.");
 }
