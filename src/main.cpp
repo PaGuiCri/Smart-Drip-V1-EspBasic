@@ -2,20 +2,15 @@
 #include <SimpleDHT.h>
 #include <NTPClient.h>
 #include <SPIFFS.h>
-#include <Preferences.h>
+#include <ArduinoJson.h>
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
 #include <HTTPClient.h>
 #include <esp_heap_caps.h> // Biblioteca para obtener detalles de la memoria
+#include "storageManager.h"
+#include "configManager.h"
+
 /* WiFi */
-//#define SSID "MOVISTAR_D327_EXT" // Cambio Wifi a red casa Salva antes MiFibra-21E0_EXT...DIGIFIBRA-HNch...MOVISTAR_D327_EXT
-//#define PASS "iMF5HSG35242K9G4GRUr" //Cambio Wifi a red casa Salva antes 2SSxDxcYNh.....iMF5HSG35242K9G4GRUr
-#define SSID "MiFibra-21E0_EXT"
-#define PASS "2SSxDxcYNh"
-uint32_t idNumber = 0;    // id Smart Drip crc32
-String idSDHex = "";      //id Smart Drip Hexadecimal
-String idSmartDrip = " Pablo Terraza ";   //id Smart Drip Usuario
-String idUser = " PabloG ";   //id usuario
 const int MAX_CONNECT = 10;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
@@ -41,17 +36,16 @@ uint32_t crc32(const uint8_t *data, size_t length) {
 #define AUTHOR_PASSWORD "kcjbfgngmfgkcxtw"
 SMTPSession smtp;
 void smtpCallback(SMTP_Status status);
+void setupMail(SMTP_Message& msg, const char* subject);
 void mailSmartDripOn();                     // mail proceso de riego iniciado
 void mailSmartDripOff();                    // mail proceso de riego finalizado
 void mailStartSystem();                     // mail inicio sistema
 void mailErrorValve();                      // mail error en electroválvula
 void mailErrorDHT11();                      // mail error en sensor DHT11
 void mailErrorSensorHigro();                // mail error en sensor higrometro
-void mailActiveSchedule(String message);    // mail horario de riego activo
-void mailNoActiveSchedule(String message);  // mail horario de riego no activo
-bool mailMonthData(String message);         // mail datos de riego mensual
-void mailCalibrateSensor();
-void saveMailError(const char* key, String errorMsg);
+void mailActiveSchedule();                  // mail horario de riego activo
+void mailNoActiveSchedule();                // mail horario de riego no activo
+void mailAnnualReport();
 ESP_Mail_Session session;
 SMTP_Message mailStartSDS;
 SMTP_Message mailDripOn;
@@ -62,13 +56,14 @@ SMTP_Message mailErrorDHT;
 SMTP_Message mailErrorHigro;
 SMTP_Message mailActivSchedule; 
 SMTP_Message mailNoActivSchedule;
-SMTP_Message mailMonthlyData;
-SMTP_Message mailCalibratSensor;
+SMTP_Message mailAnualReport;
+bool debugSmtp = false;
 bool mailDripOnSended = false;
 bool mailDripOffSended = false;
 bool mailErrorValveSended = false;
 bool mailErrorDHTSended = false;
 bool mailErrorHigroSended = false;
+bool mailAnnualReportSended = false;
 bool mailActiveScheduleCheck = false;
 bool mailNoActiveScheduleCheck = false;
 bool mailStartSystemActive = true;
@@ -76,7 +71,7 @@ bool mailActiveScheduleActive = true;
 bool mailNoActiveScheduleActive = true;
 bool mailSmartDripOnActive = true;
 bool mailSmartDripOffActive = true;
-bool mailCalibrateSensorSended = false;
+bool mailAnnualReportActive = true;
 String showErrorMail, showErrorMailConnect, finalMessage = "";
 char errorMailConnect[256], errorMail[256], textMsg[4800];
 /* Open/Close Solenoid Valve  */
@@ -98,21 +93,18 @@ String startTime = "08:00";
 String endTime = "10:30";
 String startHourStr, startMinuteStr, endHourStr, endMinuteStr, dataMonthlyMessage;
 int startHour, startMinute, endHour, endMinute;
-int currentHour, currentMinute, currentDay, currentMonth, currentYear, lastDay, lastDrip, lastDayDrip, counterDripDays;
+int currentHour, currentMinute, currentDay, currentMonth, currentYear, lastDay, lastDrip, lastDayDrip, counterDripDays, lastCheckedDay;
 int emailSendHour = 9;        // Hora del día en que se enviará el correo (formato 24 horas)
 bool emailSentToday = false;   // Variable para asegurarnos de que solo se envíe una vez al día
+bool pendingStore = false;
+bool autoCleanAnnualData = false;
+int lastYearCleaned = 0;
+bool debugPrintJson = false;   // 🔁 Actívalo cuando quieras ver en el Serial los datos del mes
 void extractTimeValues();
-int getLastDayOfMonth(int month, int year);
-void checkAndSendEmail();
-void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp);
-void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive);
-bool verifyStoredData(int day, int month);
-bool verifyDripStored(int day, int month);
-void backupStoreIfMissed(int currentDay, int currentMonth, int currentHour, int currentMinute);
 void showMemoryStatus();
-String monthlyMessage(int month);
-void cleanData();   
-void createID();
+void loadErrorLogFromJson();  
+void clearOldDataIfNewYear();
+void createAndVerifyID();
 /* NTP server config */
 const char* ntpServer = "hora.roa.es"; // Servidor NTP para sincronizar la hora
 /* Terminal configuration for hygrometer and DHT11 */
@@ -121,6 +113,7 @@ void getHigroValues();             // Método para obtener los valores del senso
 void handleDrip();                 // Método para el manejo de los procesos de riego
 void handleScheduleDrip();         // Método para el manedo del riego dentro del horario activo
 void handleOutOfScheduleDrip();    // Método para el manejo del riego fuera de horario activo
+void manageScheduleStatus();       // Método para el manejo del estado del horario de riego
 void finalizeDrip();               // Método para el manejo de la finalización del proceso de riego
 String getMonthName(int month);    // Método para obtener el nombre del mes en español
 #define PinHigro 34  // Nueva configuración de pines antes 34. volvemos al pin 34 desde el 13
@@ -151,19 +144,6 @@ void pulseCounter(){
 /* Checking Active Schedule */
 bool withinSchedule = false;
 bool isWithinSchedule(int currentHour, int currentMinute);
-/* Instance to store in flash memory */
-Preferences preferences;
-char key[20], substrateKey[20], humidityKey[20], tempKey[20], dripKey[20], dayKeyHigro[20], dayKeyHum[20], dayKeyTemp[20], dayKeyRiego[20], emailBuffer[4100], lineBuffer[128], flagSensorKey[20], flagDripKey[20];
-bool dripData[31] = {false};
-bool dataStoredFlag[31], dripStoredFlag[31];
-int substrateData[31], humidityData[31], tempData[31];
-void inicializarDatos() {
-  for (int i = 0; i < 31; i++) {
-      substrateData[i] = -100;
-      humidityData[i] = -100;
-      tempData[i] = -100;
-  }
-}
 unsigned long currentMillis, previousMillis = 0;
 const unsigned long intervalDay = 86400000; // 1 día en milisegundos (24 horas)
 size_t freeHeap = 0;
@@ -196,145 +176,108 @@ unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
 void setup() {
   Serial.begin(9600);
-  inicializarDatos();
-   if (!SPIFFS.begin(true)) {
-        Serial.println("No se pudo montar SPIFFS, se requiere formateo.");
-    } else {
-        Serial.println("SPIFFS montado correctamente.");
-        Serial.printf("Tamaño total: %u bytes\n", SPIFFS.totalBytes());
-        Serial.printf("Espacio usado: %u bytes\n", SPIFFS.usedBytes());
-    }
-    /* Start preferences */
-  preferences.begin("sensor_data", true);        
-  idNumber = preferences.getUInt("device_id", 0); // Obtener el id único del dispositivo almacenado
-  preferences.end(); 
-  /* Creación de ID único */
-  createID();
-  Serial.print("ID único CRC32: ");
-  Serial.println(idNumber, HEX);  // Muestra el id único del dispositivo en formato hexadecimal
-  idSDHex += String(idNumber, HEX);
-  preferences.begin("sensor_data", true);  
-  showErrorMail = preferences.getString("lastMailError", " No mail errors " );
-  showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
-  preferences.end();     
-  Serial.print("Error enviando mails almacenado: ");
-  Serial.println(showErrorMail);
-  Serial.print("Error conectando con el servidor SMTP almacenado: ");
-  Serial.println(showErrorMailConnect);
-  /* Inicio conexión WiFi */
-  InitWiFi();
-  Serial.print("Time: ");
+  // Montar SPIFFS
+  if (!SPIFFS.begin(true)) {
+    Serial.println("❌ No se pudo montar SPIFFS, se requiere formateo.");
+  } else {
+    Serial.println("✔ SPIFFS montado correctamente.");
+    Serial.printf("📦 Tamaño total: %u bytes\n", SPIFFS.totalBytes());
+    Serial.printf("📂 Espacio usado: %u bytes\n", SPIFFS.usedBytes());
+  }
+  // Inicializaciones esenciales
+  checkStorageFile();           // Asegura que data.json exista
+  loadConfigFromJson();         // Cargar configuración desde config.json
+  createAndVerifyID();          // Crear y guardar ID único si no existe
+  loadErrorLogFromJson();       // Cargar errores anteriores desde JSON
+  InitWiFi();                   // Conexión WiFi
+  // Mostrar datos cargados
+  Serial.println("🔧 Configuración inicial finalizada:");
+  Serial.print("🆔 ID SmartDrip: ");
+  Serial.println(idSDHex);
+  Serial.print("👤 Usuario: ");
+  Serial.println(idUser);
+  Serial.print("📍 Dispositivo: ");
+  Serial.println(idSmartDrip);
+  Serial.print("🕒 Hora actual: ");
   Serial.println(nowTime);
-  Serial.print("Date: ");
+  Serial.print("📅 Fecha actual: ");
   Serial.println(date);
+  // Configurar resolución ADC
   analogReadResolution(9);
-  pinMode(dripValveVin1, OUTPUT);
-  digitalWrite(dripValveVin1, LOW);
-  pinMode(dripValveGND1, OUTPUT);
-  digitalWrite(dripValveGND1, LOW);
+  // Configurar pines de riego
+  pinMode(dripValveVin1, OUTPUT);  digitalWrite(dripValveVin1, LOW);
+  pinMode(dripValveGND1, OUTPUT);  digitalWrite(dripValveGND1, LOW);
   pinMode(flowSensor, INPUT);
-  /* Configuración de la interrupción para detectar los pulsos del sensor de flujo */
-  attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
-  /* Configuración de emails */
-  //smtp.debug(1);
-  //smtp.callback(smtpCallback);
+  attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING); // Sensor flujo
+  // Configuración de SMTP
+  if (debugSmtp) {
+    smtp.debug(1);
+    smtp.callback(smtpCallback);
+  }
   session.server.host_name = SMTP_HOST;
   session.server.port = SMTP_PORT;
   session.login.email = AUTHOR_EMAIL;
   session.login.password = AUTHOR_PASSWORD;
   session.login.user_domain = "";
-  /* Mail de inicio de Smart Drip System */
-  mailStartSDS.sender.name = "Smart Drip System";
-  mailStartSDS.sender.email = AUTHOR_EMAIL;
-  mailStartSDS.subject = "Estado ESP32 Smart Drip";
-  mailStartSDS.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de inicio de riego de Smart Drip System */
-  mailDripOn.sender.name = "Smart Drip System";
-  mailDripOn.sender.email = AUTHOR_EMAIL;
-  mailDripOn.subject = "Inicio Riego Smart Drip";
-  mailDripOn.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de finalización de riego de Smart Drip System */
-  mailDripOff.sender.name = "Smart Drip System";
-  mailDripOff.sender.email = AUTHOR_EMAIL;
-  mailDripOff.subject = "Fin Riego Smart Drip";
-  mailDripOff.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de error en electroválvula de riego */
-  mailErrValve.sender.name = "Smart Drip System";
-  mailErrValve.sender.email = AUTHOR_EMAIL;
-  mailErrValve.subject = "Estado válvula de Smart Drip";
-  mailErrValve.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de error en sensor de flujo */
-  mailErrorFlowSensor.sender.name = "Smart Drip System";
-  mailErrorFlowSensor.sender.email = AUTHOR_EMAIL;
-  mailErrorFlowSensor.subject = "Estado sensor de flujo";
-  mailErrorFlowSensor.addRecipient("Pablo", "falder24@gmail.com");
-  /* Mail de error en sensor DHT11 */
-  mailErrorDHT.sender.name = "Smart Drip System";
-  mailErrorDHT.sender.email = AUTHOR_EMAIL;
-  mailErrorDHT.subject = "Estado sensor medio ambiente";
-  mailErrorDHT.addRecipient("Pablo", "falder24@gmail.com"); 
-  /* Mail de error en sensor Higro */
-  mailErrorHigro.sender.name = "Smart Drip System";
-  mailErrorHigro.sender.email = AUTHOR_EMAIL;
-  mailErrorHigro.subject = "Estado sensor higro";
-  mailErrorHigro.addRecipient("Pablo", "falder24@gmail.com"); 
-  /* Mail de horario de riego activo */
-  mailActivSchedule.sender.name = "Smart Drip System";
-  mailActivSchedule.sender.email = AUTHOR_EMAIL;
-  mailActivSchedule.subject = "Horario de riego activo";
-  mailActivSchedule.addRecipient("Pablo", "falder24@gmail.com"); 
-  /* Mail de horario de riego NO activo */
-  mailNoActivSchedule.sender.name = "Smart Drip System";
-  mailNoActivSchedule.sender.email = AUTHOR_EMAIL;
-  mailNoActivSchedule.subject = "Horario de riego NO activo";
-  mailNoActivSchedule.addRecipient("Pablo", "falder24@gmail.com"); 
-  /* Mail semanal de comprobación de humedades */
-  mailMonthlyData.sender.name = "Smart Drip System";
-  mailMonthlyData.sender.email = AUTHOR_EMAIL;
-  mailMonthlyData.subject = "Mail mensual de humedades";
-  mailMonthlyData.addRecipient("Pablo", "falder24@gmail.com"); 
-  /* Mail Proceso de Calibracion sensor higrómetro iniciado */
-  mailCalibratSensor.sender.name = " Smart Drip System";
-  mailCalibratSensor.sender.email = AUTHOR_EMAIL;
-  mailCalibratSensor.subject = " Proceso de calibración iniciado";
-  mailCalibratSensor.addRecipient("Pablo", "falder24@gmail.com");
-  stopPulse();
-  //getCalibrateHigroData();
-  getHigroValues();
-  if(mailStartSystemActive){
-    mailStartSystem();
+  // Crear mails
+  setupMail(mailStartSDS,           "Estado ESP32 Smart Drip");
+  setupMail(mailDripOn,             "Inicio Riego Smart Drip");
+  setupMail(mailDripOff,            "Fin Riego Smart Drip");
+  setupMail(mailErrValve,           "Estado válvula de Smart Drip");
+  setupMail(mailErrorFlowSensor,    "Estado sensor de flujo");
+  setupMail(mailErrorDHT,           "Estado sensor medio ambiente");
+  setupMail(mailErrorHigro,         "Estado sensor higro");
+  setupMail(mailActivSchedule,      "Horario de riego activo");
+  setupMail(mailNoActivSchedule,    "Horario de riego NO activo");
+  setupMail(mailAnualReport,        "Estado informe anual");
+  stopPulse();                       // Asegurar que no haya pulso activo
+  getHigroValues();                  // Obtener primera lectura
+  if (mailStartSystemActive) {
+    mailStartSystem();               // Enviar correo de inicio de sistema
   }
 }
 void loop() {
-  /* Verificar cada hora la conexión WiFi y reconecta si se ha perdido */
-  handleWiFiReconnection();
-  /* Extraer valores de tiempo actual y selección de horario */
-  extractTimeValues();
-  /* Almacenar datos en NVS */
-  storeDailyData(currentDay, currentMonth, currentHour, currentMinute, substrateHumidity, humidity, temp);
-  storeDripData(currentDay, currentMonth, currentHour, currentMinute, dripActived);
-  if (currentHour > endHour || (currentHour == endHour && currentMinute > endMinute)) {
-    backupStoreIfMissed(currentDay, currentMonth, currentHour, currentMinute);
+  handleWiFiReconnection();                                       // Verifica WiFi
+  extractTimeValues();                                            // Extrae la hora y fecha actuales
+  manageScheduleStatus();                                         // Gestionar estado según horario
+  dripActived = checkTimer;                                       // Verificar si hay riego en curso
+  if (currentDay != lastCheckedDay) {
+    clearOldDataIfNewYear();
+    mailAnnualReportSended = false;
+    lastCheckedDay = currentDay;
   }
-  /* Comprobacion y envío de mail mensual con los datos almacenados */
-  checkAndSendEmail();
-  /* Comprobación de horario activo */
-  withinSchedule = isWithinSchedule(currentHour, currentMinute);
-  /* Comprobar si el temporizador de riego está habilitado */
-  dripActived = checkTimer;  // Actualizar el estado de la activación del riego
-  Serial.print("Log Error conectando con el servidor smtp almacenado: ");
+  // Guardado tras fin de horario activo, sin riego en curso      
+  if (!withinSchedule && !checkTimer) {                           
+    String dateKey = getCurrentDateKey();                         
+    // Corregimos si endTime == 00:00                             
+    if (endHour == 0 && endMinute == 0) {                         
+      time_t now = time(nullptr) - 86400;                         
+      struct tm* timeinfo = localtime(&now);                      
+      char buffer[11];                                            
+      snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", 1900 + timeinfo->tm_year, 1 + timeinfo->tm_mon, timeinfo->tm_mday);
+      dateKey = String(buffer);                                   
+    }
+    if (!isDataStoredForDate(dateKey)) {                          
+      getHigroValues();                                          
+      getDHTValues();                                             
+      storeOrUpdateDailyDataJson(currentDay, currentMonth, currentYear, substrateHumidity, humidity, temp, dripActived, true, dateKey);
+    }                                                             
+  }
+  // Si hay riego activo al final del horario, marcar para guardar después
+  if (!withinSchedule && checkTimer) {                            
+    if (!pendingStore) {
+      Serial.println("📌 Riego activo al final del horario. Marcamos para guardar más tarde.");
+      pendingStore = true;
+    }
+  }
+  if (flowSensorEnabled) {
+    flowMeter();                                                   // Monitorización continua del flujo de agua
+  }
+  finalizeDrip();                                                  // Cierre de proceso de riego si ha terminado
+  Serial.print("📡 Error SMTP: ");
   Serial.println(showErrorMailConnect);
-  Serial.print("Log Error enviando mails almacenado: ");
+  Serial.print("📬 Error envío mail: ");
   Serial.println(showErrorMail);
-  if (withinSchedule) {   // Si estamos dentro del horario de riego
-    /* Manejar el proceso de riego cuando estamos dentro del horario programado */
-    handleScheduleDrip();
-  } else {
-    /* Manejar situaciones de riego fuera del horario programado */
-    handleOutOfScheduleDrip();
-  }
-  /* Finalizar el proceso de riego si el tiempo de riego ha terminado */
-  finalizeDrip();
 }
 /* Get Time */
 void extractTimeValues() {
@@ -370,14 +313,22 @@ bool isWithinSchedule(int currentHour, int currentMinute) {
         return (currentTotalMinutes >= startTotalMinutes || currentTotalMinutes <= endTotalMinutes);
     }
 }
+void manageScheduleStatus() {
+  // Actualizar si estamos o no dentro del horario activo
+  withinSchedule = isWithinSchedule(currentHour, currentMinute);
+
+  if (withinSchedule) {
+    handleScheduleDrip();  // Dentro del horario activo
+  } else {
+    handleOutOfScheduleDrip();  // Fuera del horario activo
+  }
+}
 void handleScheduleDrip(){
   getHigroValues();
   mailNoActiveScheduleCheck = false;
   Serial.println("Active irrigation schedule");
   if (!mailActiveScheduleCheck && mailActiveScheduleActive) {  
-    dataMonthlyMessage = monthlyMessage(currentMonth);
-    Serial.println(dataMonthlyMessage);
-    mailActiveSchedule(dataMonthlyMessage);                 // Envío mail horario de riego activo
+    mailActiveSchedule();                 // Envío mail horario de riego activo
   }
   if (!checkTimer) {                                        // Si el temporizador no está habilitado, reiniciar los valores predeterminados de riego
     dripTime = dripTimeLimit * 60000;                       // Indica el tiempo de riego en milisegundos según el tiempo límite marcado por el usuario
@@ -401,46 +352,22 @@ void handleScheduleDrip(){
 /* Handle Drip Process */
 void handleDrip() {
   if (!checkTimer) {
-    startDripTime = millis();                                 // Marcar el tiempo de inicio del riego
-  }
-  if (!dripValve) {
-    openDripValve();
+    startDripTime = millis();
     checkTimer = true;
     mailDripOffSended = false;
-    if(flowSensorEnabled) {
-      flowMeter();                                            // Solo se llama si el sensor de flujo está habilitado
-    }
-    Serial.println("Drip process underway");  
+    openDripValve();
+    Serial.println("🚿 Riego iniciado");
   } else {
-    if(flowSensorEnabled) {
-      flowMeter();                                            // Solo se llama si el sensor de flujo está habilitado
-      Serial.print("Caudal: ");
-      Serial.print(caudal);
-      Serial.print(" L/min - Volumen acumulado: ");
-      Serial.print(totalLitros);
-      Serial.println(" L.");
-    }
-    if (!mailDripOnSended && mailSmartDripOnActive) {  
+    if (!mailDripOnSended && mailSmartDripOnActive) {
       mailSmartDripOn();
     }
+    Serial.printf("🕒 Tiempo restante: %d min, %d seg\n", remainingMinutes, remainingSeconds);
+    Serial.printf("💧 Caudal: %.2f L/min - Total: %.2f L\n", caudal, totalLitros);
   }
-  elapsedTime = millis() - startDripTime;                     // Calcular el tiempo transcurrido desde el inicio del riego en milisegundos
-  remainingTime = dripTime - elapsedTime;                     // Mostrar el tiempo restante
+  elapsedTime = millis() - startDripTime;
+  remainingTime = dripTime - elapsedTime;
   remainingMinutes = remainingTime / 60000;
   remainingSeconds = (remainingTime % 60000) / 1000;
-  Serial.print("Drip in progress. Time remaining: ");
-  Serial.print(remainingMinutes);
-  Serial.print(" minutes, ");
-  Serial.print(remainingSeconds);
-  Serial.println(" seconds.");
-  if (flowSensorEnabled) {
-    flowMeter();
-    Serial.print("Caudal: ");
-    Serial.print(caudal);
-    Serial.print(" L/min - Volumen acumulado: ");
-    Serial.print(totalLitros);
-    Serial.println(" L.");
-  }
 }
 /* Handle Out of Schedule Irrigation */
 void handleOutOfScheduleDrip() {
@@ -449,9 +376,7 @@ void handleOutOfScheduleDrip() {
   Serial.println(caudal);
   mailActiveScheduleCheck = false;
   if (!mailNoActiveScheduleCheck && mailNoActiveScheduleActive) {
-    dataMonthlyMessage = monthlyMessage(currentMonth);
-    Serial.println(dataMonthlyMessage);
-    mailNoActiveSchedule(dataMonthlyMessage);
+    mailNoActiveSchedule();
   }
   if (!dripValve && caudal != 0) {
     if (closeValveCounter != 0) {
@@ -467,30 +392,48 @@ void handleOutOfScheduleDrip() {
 }
 /* Finalize Irrigation */
 void finalizeDrip() {
-  if(checkTimer){
-    elapsedTime = millis() - startDripTime;                     // Calcular el tiempo transcurrido desde el inicio del riego en milisegundos
-    remainingTime = dripTime - elapsedTime;                     // Mostrar el tiempo restante
+  if (checkTimer) {
+    elapsedTime = millis() - startDripTime;
+    remainingTime = dripTime - elapsedTime;
     remainingMinutes = remainingTime / 60000;
     remainingSeconds = (remainingTime % 60000) / 1000;
-    Serial.print("Drip in progress. Time remaining: ");
+    Serial.print("⏳ Riego en curso. Tiempo restante: ");
     Serial.print(remainingMinutes);
-    Serial.print(" minutes, ");
+    Serial.print(" minutos, ");
     Serial.print(remainingSeconds);
-    Serial.println(" seconds.");                
+    Serial.println(" segundos.");
     if (elapsedTime >= dripTime) {
-      Serial.println("Drip process completed");
+      Serial.println("✅ Proceso de riego finalizado.");
       if (dripValve == true) {
         closeDripValve();
-        checkTimer = false;                                    // Finalizar el proceso de riego
+        checkTimer = false;
         mailDripOnSended = false;
-        if(!mailDripOffSended && mailSmartDripOffActive){
+        if (!mailDripOffSended && mailSmartDripOffActive) {
           mailSmartDripOff();
         }
-        getHigroValues();
+        getHigroValues();  // Actualizar valores del sustrato tras el riego
+        if (pendingStore) {
+          Serial.println("📥 Guardado pendiente detectado. Procediendo al almacenamiento...");
+          // Corregimos fecha si el horario terminó a las 00:00
+          String dateKey = getCurrentDateKey();
+          if (startHour == 0 && startMinute == 0) {
+            time_t now = time(nullptr) - 86400; // Restamos un día en segundos
+            struct tm* timeinfo = localtime(&now);
+            char buffer[11];
+            snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", 1900 + timeinfo->tm_year, 1 + timeinfo->tm_mon, timeinfo->tm_mday);
+            dateKey = String(buffer);
+          }
+          storeOrUpdateDailyDataJson(currentDay, currentMonth, currentYear,
+                                     substrateHumidity, humidity, temp,
+                                     true, true, dateKey);
+
+          pendingStore = false;  // Limpiar flag
+        }
       }
     }
   }
 }
+
 /* Getting Higro Measurements */
 void getHigroValues(){
   higroValue = analogRead(PinHigro);
@@ -601,87 +544,97 @@ void stopPulse(){
   delay(500);
 }
 /* Flow meter */
-void flowMeter(){
-  if ((millis() - oldTime) > 1000){                // Cálculo del caudal cada segundo
-    detachInterrupt(digitalPinToInterrupt(flowSensor));    // Desactiva las interrupciones mientras se realiza el cálculo
-    Serial.print("Pulsos: ");
-    Serial.println(pulses);
-    /* Calculates the flow rate in liters per minute */
-    caudal = pulses / 5.5;                         // factor de conversión, siendo K=7.5 para el sensor de ½”, K=5.5 para el sensor de ¾” y 3.5 para el sensor de 1”
-    pulses = 0;                                    // Reinicia el contador de pulsos
-    waterVolume = (caudal / 60) * 1000/1000;       // Calcula el volumen de agua en mililitros
-    totalLitros += waterVolume;                    // Incrementa el volumen total acumulado
-    attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
+void flowMeter() {
+  if ((millis() - oldTime) > 1000) {  // Actualización cada segundo
+    detachInterrupt(digitalPinToInterrupt(flowSensor));
+    caudal = pulses / 5.5;           // factor de conversión, siendo K=7.5 para el sensor de ½”, K=5.5 para el sensor de ¾” y 3.5 para el sensor de 1”
+    pulses = 0;                      // Reinicia el contador de pulsos
+    waterVolume = caudal / 60.0;     // Litros por segundo
+    totalLitros += waterVolume;      // Incrementa el volumen total acumulado
     oldTime = millis();
-    float caudalRiego = caudal;
-    float caudalTotal = totalLitros; 
-    if(caudal != 0){
-      flowMeterEstatus = true;
-      Serial.println(" Sensor de riego conectado");
-    }else{
-      flowMeterEstatus = false;
-      Serial.println(" Sensor de riego desconectado");
-    } 
+    attachInterrupt(digitalPinToInterrupt(flowSensor), pulseCounter, FALLING);
+    flowMeterEstatus = (caudal > 0);
+    Serial.printf("💧 Caudal: %.2f L/min - Acumulado: %.2f L\n", caudal, totalLitros);
+    Serial.println(flowMeterEstatus ? "✅ Sensor conectado" : "❌ Sensor desconectado");
   }
 }
 /* Create and Encrypt ID */
-void createID(){
-if (idNumber == 0) {  // Si no está almacenado, se genera y se almacena
-    String macAddress = WiFi.macAddress();  // Inicializa la dirección MAC como un ID único y convierte la dirección MAC a un array de bytes
-    Serial.print("Dirección MAC: ");
-    Serial.println(macAddress);
-    uint8_t macBytes[6];
-    sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-           &macBytes[0], &macBytes[1], &macBytes[2], 
-           &macBytes[3], &macBytes[4], &macBytes[5]);
-    idNumber = crc32(macBytes, 6);
-    // Muestra el hash en el monitor serial
-    Serial.print("ID único (CRC32): ");
-    Serial.println(idNumber, HEX);
-    preferences.begin("sensor_data", false);  // Modo escritura
-    preferences.putUInt("device_id", idNumber);
-    preferences.end();  // 🔹 Cierra Preferences después de eliminar los datos
+void createAndVerifyID() {
+  String macAddress = WiFi.macAddress();
+  uint8_t macBytes[6];
+  sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+         &macBytes[0], &macBytes[1], &macBytes[2],
+         &macBytes[3], &macBytes[4], &macBytes[5]);
+  idNumber = crc32(macBytes, 6);
+  String generatedID = String(idNumber, HEX);
+  idSDHex = generatedID;
+  // Leer JSON
+  File file = SPIFFS.open("/config.json", "r");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir config.json para validar ID");
+    return;
   }
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, file);
+  file.close();
+  String storedID = doc["config"]["idSDHex"].as<String>();
+  if (storedID == "") {
+    Serial.println("📌 ID no encontrado en JSON. Guardando nuevo ID...");
+    doc["config"]["idSDHex"] = generatedID;
+  } else if (storedID != generatedID) {
+    Serial.println("⚠️ ID en JSON no coincide con el generado.");
+    Serial.printf("➡️ Corrigiendo: %s -> %s\n", storedID.c_str(), generatedID.c_str());
+    doc["config"]["idSDHex"] = generatedID;
+  } else {
+    Serial.println("✅ ID en JSON verificado correctamente");
+  }
+  file = SPIFFS.open("/config.json", "w");
+  serializeJsonPretty(doc, file);
+  file.close();
 }
 /* New Start WiFi */
 void InitWiFi() {
-  WiFi.begin(SSID, PASS);  // Inicializamos el WiFi con nuestras credenciales.
+  if (ssid.isEmpty() || pass.isEmpty()) {
+    Serial.println("⚠️ SSID o contraseña no definidos. No se intentará conectar a WiFi.");
+    return;
+  }
+  WiFi.begin(ssid.c_str(), pass.c_str());  // 👈 Usamos las variables cargadas desde config.json
   Serial.print("Conectando a ");
-  Serial.print(SSID);
+  Serial.print(ssid);
   Serial.println("...");
   int tries = 0;
   state = WiFi.status();
   unsigned long initTime = millis();
   const unsigned long interval = 5000;   // 5 segundos
-  const unsigned long waitTime = 15000;  // 15 segundos para dar tiempo al WiFi
-  while (state != WL_CONNECTED && tries < MAX_CONNECT) {      // Continuar mientras no esté conectado y no se hayan agotado los intentos
+  const unsigned long waitTime = 15000;  // 15 segundos
+  while (state != WL_CONNECTED && tries < MAX_CONNECT) {
     currentMillis = millis();
-    // Verificar si han pasado 5 segundos
     if (currentMillis - initTime >= interval) {
       Serial.print("...Intento de conectar a la red WiFi ");
-      Serial.print(SSID);
+      Serial.print(ssid);
       Serial.print(": ");
       Serial.println(tries + 1);
-      if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {   // Verificar si el tiempo de espera total ha pasado para intentar reconectar
+      if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {
         WiFi.reconnect();
-        initTime = millis(); // Reiniciar el temporizador solo después de reconectar
-      }else{
+        initTime = millis();  // Reiniciar temporizador después de intentar reconexión
+      } else {
         initTime = millis();
       }
       state = WiFi.status();
       tries++;
     }
-    // Aquí puedes ejecutar otras tareas mientras esperas
+    // 🔁 Aquí puedes ejecutar otras tareas si quieres
   }
-  if (state == WL_CONNECTED) {      // Verificar si la conexión fue exitosa
-    Serial.println("\n\nConexión exitosa!!!");
-    Serial.print("Tu IP es: ");
+  if (state == WL_CONNECTED) {
+    Serial.println("\n\n✅ Conexión WiFi exitosa!!!");
+    Serial.print("📡 IP: ");
     Serial.println(WiFi.localIP());
     NTPsincro();
   } else {
-    Serial.println("\n\nError: No se pudo conectar a la red WiFi.");
+    Serial.println("\n\n❌ No se pudo conectar a la red WiFi.");
   }
 }
+
 /* Check WiFi Reconnection */
 void handleWiFiReconnection() {
   if (millis() - lastConnectionTry >= tryInterval) {  // Comprobación de la conexión de la red WiFi cada hora
@@ -695,16 +648,27 @@ void handleWiFiReconnection() {
 }
 /* Function to save the last synchronized time in NVS memory */
 void saveLastSyncTime(time_t timestamp) {
-  preferences.begin("sensor_data", false); 
-  preferences.putULong64("lastSync", timestamp);  // Guarda el timestamp en NVS
-  preferences.end(); 
+  File file = SPIFFS.open("/data.json", "r");
+  DynamicJsonDocument doc(4096);
+  if (file) {
+    deserializeJson(doc, file);
+    file.close();
+  }
+  doc["ultima_sincronizacion"] = (uint64_t)timestamp;
+  file = SPIFFS.open("/data.json", "w");
+  serializeJsonPretty(doc, file);
+  file.close();
+  Serial.printf("🕒 Hora de sincronización guardada: %llu\n", (uint64_t)timestamp);
 }
 /* Function to retrieve the last synchronized time from NVS memory */
 time_t getLastSyncTime() {
-  preferences.begin("sensor_data", true);                   // Modo lectura (true)
-  time_t lastSync = preferences.getULong64("lastSync", 0);  // Recupera el timestamp, 0 si no hay ninguno
-  preferences.end();                                        // Cierra Preferences después de leer
-  return lastSync;
+  File file = SPIFFS.open("/data.json", "r");
+  if (!file) return 0;
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) return 0;
+  return doc["ultima_sincronizacion"] | 0;
 }
 /* NTP Sincronization with RTC */
 void NTPsincro() {
@@ -736,114 +700,6 @@ void NTPsincro() {
       Serial.println("⚠ No hay hora previa almacenada. La hora será incorrecta hasta la próxima sincronización.");
   }
 }
-/* Storage Data Sensors */
-void storeDailyData(int currentDay, int currentMonth, int currentHour, int currentMinute, int newSubstrate, int newHumidity, int newTemp) {
-  // ✅ Asegurar que solo se ejecuta en el minuto exacto en que termina el horario activo
-  if (currentHour != endHour || currentMinute != endMinute) {
-      return;  // Salir si no estamos en el momento exacto de guardado
-  }
-  if (verifyStoredData(currentDay, currentMonth)) {
-      Serial.printf("✅ Datos del día %d ya estaban almacenados, no se guardan de nuevo.\n", currentDay);
-      showMemoryStatus();
-      return;  // Salir si ya estaban guardados
-  }
-  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", currentMonth);
-  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", currentMonth);
-  snprintf(tempKey, sizeof(tempKey), "Temp_%d", currentMonth);
-  snprintf(flagSensorKey, sizeof(flagSensorKey), "FlagSens_%d", currentMonth);
-  preferences.begin("sensor_data", false);  // Modo escritura
-  size_t intArraySize = 31 * sizeof(int);
-  size_t boolArraySize = 31 * sizeof(bool);
-  // Leer antes de modificar
-  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
-  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
-  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
-  if (preferences.isKey(flagSensorKey)) preferences.getBytes(flagSensorKey, dataStoredFlag, boolArraySize);
-  // Guardar los datos en el array
-  substrateData[currentDay - 1] = newSubstrate;
-  humidityData[currentDay - 1] = newHumidity;
-  tempData[currentDay - 1] = newTemp;
-  dataStoredFlag[currentDay - 1] = true;
-  // Guardar en la memoria
-  preferences.putBytes(substrateKey, substrateData, intArraySize);
-  preferences.putBytes(humidityKey, humidityData, intArraySize);
-  preferences.putBytes(tempKey, tempData, intArraySize);
-  preferences.putBytes(flagSensorKey, dataStoredFlag, boolArraySize);
-  Serial.printf("📥 Datos del día %d almacenados en memoria.\n", currentDay);
-  preferences.end();  // Cerrar memoria
-  showMemoryStatus();
-}
-/* Storage Drip Data */
-void storeDripData(int currentDay, int currentMonth, int currentHour, int currentMinute, bool dripActive) {
-  // ✅ Solo se ejecuta en el minuto exacto en que termina el horario activo
-  if (currentHour != endHour || currentMinute != endMinute) {
-      return;  // Salir si no es el momento exacto
-  }
-  if (verifyDripStored(currentDay, currentMonth)) {
-      Serial.printf("✅ Riego del día %d ya estaba almacenado, no se guarda de nuevo.\n", currentDay);
-      return;  // Salir si ya se guardó
-  }
-  char dripKey[16];
-  snprintf(dripKey, sizeof(dripKey), "Drip_%d", currentMonth);
-  snprintf(flagDripKey, sizeof(flagDripKey), "FlagDrip_%d", currentMonth);
-  preferences.begin("sensor_data", false);  // Modo escritura
-  size_t boolArraySize = 31 * sizeof(bool);
-  // Leer antes de modificar
-  if (preferences.isKey(dripKey)) preferences.getBytes(dripKey, dripData, boolArraySize);
-  if (preferences.isKey(flagDripKey)) preferences.getBytes(flagDripKey, dripStoredFlag, boolArraySize);
-  // Guardar el estado del riego
-  dripData[currentDay - 1] = dripActive;
-  dripStoredFlag[currentDay - 1] = true;
-  preferences.putBytes(dripKey, dripData, boolArraySize);
-  preferences.putBytes(flagDripKey, dripStoredFlag, boolArraySize);
-  Serial.printf("💾 Datos de riego almacenados para el día %d del mes %d: %s\n",
-                currentDay, currentMonth, dripActive ? "Sí" : "No");
-  preferences.end();  // Cerrar Preferences
-  // Actualizar contador de días sin riego
-  counterDripDays = dripActive ? 0 : counterDripDays + 1;
-  lastDayDrip = currentDay;
-  dripActived = false;
-  if (counterDripDays == 25) {  
-      Serial.println("⚠ Advertencia: Han pasado 25 días sin activarse el riego.");
-  }
-}
-/* Stored Sensor Data Verification */
-bool verifyStoredData(int day, int month) {
-  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
-  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
-  snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
-  size_t dataSize = 31 * sizeof(int);
-  preferences.begin("sensor_data", true);  // MODO LECTURA
-  bool foundData = false;  // Bandera para saber si hay datos guardados
-  if (preferences.isKey(substrateKey)) {
-      preferences.getBytes(substrateKey, substrateData, dataSize);
-      if (substrateData[day - 1] != -100) foundData = true;
-  }
-  if (preferences.isKey(humidityKey)) {
-      preferences.getBytes(humidityKey, humidityData, dataSize);
-      if (humidityData[day - 1] != -100) foundData = true;
-  }
-  if (preferences.isKey(tempKey)) {
-      preferences.getBytes(tempKey, tempData, dataSize);
-      if (tempData[day - 1] != -100) foundData = true;
-  }
-  preferences.end();  // Cerrar memoria
-  return foundData;  // Devolver si hay datos o no
-}
-/* Stored Drip Verification */
-bool verifyDripStored(int day, int month) {
-  char dripKey[16];
-  snprintf(dripKey, sizeof(dripKey), "Drip_%d", month);
-  size_t boolArraySize = 31 * sizeof(bool);
-  preferences.begin("sensor_data", true);  // Modo lectura
-  bool stored = false;
-  if (preferences.isKey(dripKey)) {
-      preferences.getBytes(dripKey, dripData, boolArraySize);
-      stored = dripData[day - 1];  // Ver si hay datos guardados para ese día
-  }
-  preferences.end();  // Cerrar memoria
-  return stored;
-}
 /* Show Memory Status */
 void showMemoryStatus() {
   freeHeap = ESP.getFreeHeap();
@@ -861,319 +717,354 @@ void showMemoryStatus() {
   Serial.println(" bytes");
   Serial.println("--------------------------------");
 }
-/* Sender Monthly Mail */
-void checkAndSendEmail() {
-  int currentTotalMinutes = currentHour * 60 + currentMinute;
-  int endTotalMinutes = endHour * 60 + endMinute;
-  int lastDayOfMonth = getLastDayOfMonth(currentMonth, currentYear);
-  if (currentDay == lastDayOfMonth && currentTotalMinutes > endTotalMinutes && !emailSentToday) { 
-      dataMonthlyMessage = monthlyMessage(currentMonth);
-      if (mailMonthData(dataMonthlyMessage)) {  // ✅ Solo borrar datos si el envío fue exitoso
-          Serial.println("✅ Informe mensual enviado con éxito");
-          cleanData();
-          Serial.println("🗑 Datos eliminados después del informe mensual");
-      } else {
-          Serial.println("⚠️ Error en el envío del informe mensual, datos no eliminados");
-      }
-      emailSentToday = true;  
+void loadErrorLogFromJson() {
+  File file = SPIFFS.open("/data.json", "r");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir data.json para leer errores");
+    return;
   }
-  if (currentDay != lastDayOfMonth) {  
-      emailSentToday = false;
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) {
+    Serial.println("❌ Error al leer errores desde data.json");
+    return;
+  }
+  showErrorMail = doc["errores"]["envio"] | " No mail errors ";
+  showErrorMailConnect = doc["errores"]["smtp"] | " No SMTP connect error ";
+  Serial.print("📩 Error enviando mails almacenado: ");
+  Serial.println(showErrorMail);
+  Serial.print("📡 Error conectando con SMTP almacenado: ");
+  Serial.println(showErrorMailConnect);
+}
+void clearOldDataIfNewYear() {
+  if (!autoCleanAnnualData) return;
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  int currentYearToKeep = 1900 + timeinfo->tm_year;
+  if (lastYearCleaned == currentYearToKeep) return;  // Ya se hizo limpieza este año
+  File file = SPIFFS.open("/data.json", "r");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir data.json para limpieza");
+    return;
+  }
+  DynamicJsonDocument doc(8192);
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) {
+    Serial.println("❌ Error al deserializar data.json");
+    return;
+  }
+  JsonObject data = doc["data"];
+  if (!data) return;
+  JsonObject filtered = doc.createNestedObject("data_filtrada");
+  for (JsonPair kv : data) {
+    String key = kv.key().c_str();  // Ej: "2023-12-31"
+    int year = key.substring(0, 4).toInt();
+    if (year >= currentYearToKeep) {
+      filtered[key] = kv.value();
+    }
+  }
+  doc["data"] = filtered;
+  doc.remove("data_filtrada");
+  file = SPIFFS.open("/data.json", "w");
+  if (serializeJsonPretty(doc, file) == 0) {
+    Serial.println("❌ Error al escribir datos tras limpieza anual");
+  } else {
+    Serial.println("🧹 Datos antiguos eliminados correctamente");
+    lastYearCleaned = currentYearToKeep;
+  }
+  file.close();
+  if (mailAnnualReportActive && !mailAnnualReportSended) {
+    mailAnnualReport();              // Enviar el informe anual
+    mailAnnualReportSended = true;   // Evitar reenvío
   }
 }
-void backupStoreIfMissed(int currentDay, int currentMonth, int currentHour, int currentMinute) {
-  if (!verifyStoredData(currentDay, currentMonth)) {
-      Serial.println("⚠️ No se detectaron datos de sensores guardados hoy. Guardando valores actuales...");
-      getHigroValues();
-      getDHTValues();
-      storeDailyData(currentDay, currentMonth, currentHour, currentMinute, substrateHumidity, humidity, temp);
-  }
 
-  if (!verifyDripStored(currentDay, currentMonth)) {
-      Serial.println("⚠️ No se detectó estado de riego guardado hoy. Guardando estado actual...");
-      bool drip = dripActived;
-      storeDripData(currentDay, currentMonth, currentHour, currentMinute, drip);
-  }
-}
-/* Get Last Day of the Month */
-int getLastDayOfMonth(int month, int year) {
-  switch (month) {
-      case 1: case 3: case 5: case 7: case 8: case 10: case 12:
-          return 31;
-      case 4: case 6: case 9: case 11:
-          return 30;
-      case 2: // Verificamos si es un año bisiesto
-          return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28;
-      default:
-          return 30;  // Fallback (no debería ocurrir)
-  }
-}
-/* Monthly Data Message Maker */
-String monthlyMessage(int month) {
-  preferences.begin("sensor_data", true);
-  emailBuffer[0] = '\0';
-  // Obtener el día actual
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("❌ Error obteniendo la hora.");
-    return "";
-  }
-  int today = timeinfo.tm_mday;  // Día actual
-  // Inicializar arrays con -100 y false
-  for (int i = 0; i < 31; i++) {
-    substrateData[i] = -100;
-    humidityData[i] = -100;
-    tempData[i] = -100;
-    dripData[i] = false;
-  }
-  // Leer datos almacenados
-  snprintf(substrateKey, sizeof(substrateKey), "Higro_%d", month);
-  snprintf(humidityKey, sizeof(humidityKey), "Humedad_%d", month);
-  snprintf(tempKey, sizeof(tempKey), "Temp_%d", month);
-  snprintf(dripKey, sizeof(dripKey), "Drip_%d", month);
-  size_t intArraySize = 31 * sizeof(int);
-  size_t boolArraySize = 31 * sizeof(bool);
-  if (preferences.isKey(substrateKey)) preferences.getBytes(substrateKey, substrateData, intArraySize);
-  if (preferences.isKey(humidityKey)) preferences.getBytes(humidityKey, humidityData, intArraySize);
-  if (preferences.isKey(tempKey)) preferences.getBytes(tempKey, tempData, intArraySize);
-  if (preferences.isKey(dripKey)) preferences.getBytes(dripKey, dripData, boolArraySize);
-  preferences.end();
-  // Variables de último valor válido
-  int lastSubstrate = -100, lastHumidity = -100, lastTemp = -100;
-  for (int day = 1; day <= today; day++) {  // 🔥 Solo hasta el día actual
-      if (substrateData[day - 1] != -100) lastSubstrate = substrateData[day - 1];
-      if (humidityData[day - 1] != -100) lastHumidity = humidityData[day - 1];
-      if (tempData[day - 1] != -100) lastTemp = tempData[day - 1];
-      // Verificar si hay datos
-      bool hasData = (lastSubstrate != -100) || (lastHumidity != -100) || (lastTemp != -100) || dripData[day - 1];
-      if (!hasData) continue;
-      snprintf(lineBuffer, sizeof(lineBuffer),
-               "Día %d: Riego: %s | Humedad sustrato: %d%% | Humedad ambiental: %d%% | Temp: %d°C\n",
-               day, dripData[day - 1] ? "Sí" : "No", lastSubstrate, lastHumidity, lastTemp);
-      strncat(emailBuffer, lineBuffer, sizeof(emailBuffer) - strlen(emailBuffer) - 1);
-  }
-  return String(emailBuffer);
+/* Mail Setup */
+void setupMail(SMTP_Message& msg, const char* subject) {
+  msg.sender.name = "Smart Drip System";
+  msg.sender.email = AUTHOR_EMAIL;
+  msg.subject = subject;
+  msg.addRecipient("Pablo", "falder24@gmail.com");
 }
 /* Mail Start System */
-void mailStartSystem(){
+void mailStartSystem() {
   snprintf(textMsg, sizeof(textMsg),
-         "%s \n%s \n"
-         "SmartDrip%s conectado a la red y en funcionamiento. \n"
-         "Datos de configuración guardados: \n"
-         "Tiempo de riego: %d min. \n"
-         "Límite de humedad de riego: %d%% \n"
-         "Horario de activación de riego: \n"
-         "Hora de inicio: %s\n"
-         "Hora de fin: %s\n"
-         "Humedad sustrato: %d%% \n",
-         idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),  // Convertir `String` a `const char*`
-         dripTimeLimit,
-         dripHumidityLimit,
-         startTime.c_str(), endTime.c_str(),                   // Convertir `String` a `const char*`
-         substrateHumidity);
-  finalMessage = String(textMsg);       // Si necesitas devolverlo como String
+        "📡 *SmartDrip en línea*\n"
+        "🔹 Dispositivo: SmartDrip%s\n"
+        "🔹 Usuario: %s (%s)\n\n"
+        "🟢 El sistema se ha conectado correctamente a la red WiFi.\n"
+        "⚙️ Configuración actual:\n"
+        "• Tiempo de riego: %d min\n"
+        "• Límite de humedad: %d%%\n"
+        "• Horario de riego: %s - %s\n"
+        "• Humedad actual del sustrato: %d%%\n\n"
+        "✅ El sistema está listo y en funcionamiento.",
+        idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
+        dripTimeLimit, dripHumidityLimit,
+        startTime.c_str(), endTime.c_str(),
+        substrateHumidity);
+  finalMessage = String(textMsg);
   mailStartSDS.text.content = finalMessage.c_str();
   mailStartSDS.text.charSet = "us-ascii";
   mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                 
-    return; 
+  if (!smtp.connect(&session)) {
+    updateErrorLog(smtp.errorReason(), showErrorMail);
+    return;
   }
-  if(!MailClient.sendMail(&smtp, &mailStartSDS)){
-    saveMailError("lastMailError", smtp.errorReason());
-  }else{
-    Serial.println("Correo enviado con exito");
+  if (!MailClient.sendMail(&smtp, &mailStartSDS)) {
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  } else {
+    Serial.println("📩 Mail de inicio de sistema enviado.");
   }
-  ESP_MAIL_PRINTF("Liberar memoria: %d\n", MailClient.getFreeHeap());
+  ESP_MAIL_PRINTF("🧠 Memoria tras envío: %d\n", MailClient.getFreeHeap());
   smtp.closeSession();
 }
 /* Mail Active Schedule */
-void mailActiveSchedule(String message) {
+void mailActiveSchedule() {
   nowTime = rtc.getTime();
   date = rtc.getDate();
   currentMonth = rtc.getMonth() + 1;
-  preferences.begin("sensor_data", true);                                          // Leer errores previos de la memoria
-  showErrorMail = preferences.getString("lastMailError", " No mail errors ");
-  showErrorMailConnect = preferences.getString("erSMTPServ", " No SMTP connect error ");
-  preferences.end();
-  bool sensoresGuardados = verifyStoredData(currentDay, currentMonth);
-  bool riegoGuardado = verifyDripStored(currentDay, currentMonth);
-  snprintf(textMsg, sizeof(textMsg),                                               // Construcción del mensaje
-           "%s \n%s \n"
-           "SmartDrip%s: Inicio de horario activo de riego. \n"
-           "RTC: con fecha: %s | hora: %s\n"
-           "Datos de configuración guardados: \n"
-         "  - Tiempo de riego: %d min. \n"
-         "  - Límite de humedad: %d%% \n"
-         "  - Horario de riego: %s - %s\n"
-         "  - Humedad sustrato: %d%% \n"
-         "Datos del día %d:\n"
-         "  - Sensores: %s\n"
-         "  - Riego: %s\n\n"
-         "Datos almacenados del mes %d:\n%s\n"
-         "Estado de la memoria:\n"
-         "  - Total: %d bytes\n"
-         "  - Usada: %d bytes\n"
-         "  - Libre: %d bytes\n"
-         "Errores recientes en el envío de correos:\n"
-         "  - Conexión SMTP: %s\n"
-         "  - Envío de correo: %s\n",
-         idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),
-         date.c_str(), nowTime.c_str(),
-         dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),
-         substrateHumidity,
-         currentDay,
-         sensoresGuardados ? "Sí" : "No",
-         riegoGuardado ? "Sí" : "No",
-         currentMonth, message.c_str(),
-         totalHeap, usedHeap, freeHeap,
-         showErrorMailConnect.c_str(), showErrorMail.c_str());
-  finalMessage = String(textMsg);                                                     
-  mailActivSchedule.text.content = finalMessage.c_str();                              
-  mailActivSchedule.text.charSet = "us-ascii";                                        
-  mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;     
-  mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal; 
-  if (!smtp.connect(&session)) {                                                      // Intentar conectar al servidor SMTP
-      saveMailError("erSMTPServ", smtp.errorReason());                                 
-      return;                                                                         
-  }                                                                                   
-  if (!MailClient.sendMail(&smtp, &mailActivSchedule)) {                              // Intentar enviar el email
-      saveMailError("lastMailError", smtp.errorReason());
+  String dateKey = getCurrentDateKey(); // YYYY-MM-DD
+  bool datosGuardados = isDataStoredForDate(dateKey);
+  String message = printMonthlyDataJson(currentMonth, currentYear);
+  snprintf(textMsg, sizeof(textMsg),
+        "🌿 *SmartDrip: Horario activo iniciado*\n"
+        "🔹 Dispositivo: SmartDrip%s\n"
+        "🔹 Usuario: %s (%s)\n\n"
+        "🕒 Hora actual (RTC): %s | %s\n\n"
+        "⚙️ *Configuración activa:*\n"
+        "• Tiempo de riego: %d min\n"
+        "• Límite de humedad: %d%%\n"
+        "• Horario: %s - %s\n"
+        "• Humedad del sustrato: %d%%\n\n"
+        "📅 *Datos del día %d:*\n"
+        "• Datos guardados: %s\n"
+        "• ¿Se regó?: %s\n\n"
+        "🗓 *Resumen del mes %d:*\n"
+        "%s\n"
+        "💾 *Estado de memoria SPIFFS:*\n"
+        "• Total: %d bytes\n"
+        "• Usada: %d bytes\n"
+        "• Libre: %d bytes\n\n"
+        "⚠️ *Errores recientes en correo:*\n"
+        "• Conexión SMTP: %s\n"
+        "• Envío de correo: %s\n",
+        idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
+        date.c_str(), nowTime.c_str(),
+        dripTimeLimit, dripHumidityLimit,
+        startTime.c_str(), endTime.c_str(),
+        substrateHumidity,
+        currentDay,
+        datosGuardados ? "Sí" : "No",
+        dripActived ? "Sí" : "No",
+        currentMonth, message.c_str(),
+        totalHeap, usedHeap, freeHeap,
+        showErrorMailConnect.c_str(), showErrorMail.c_str());
+  finalMessage = String(textMsg);
+  mailActivSchedule.text.content = finalMessage.c_str();
+  mailActivSchedule.text.charSet = "us-ascii";
+  mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  if (!smtp.connect(&session)) {
+    updateErrorLog(smtp.errorReason(), showErrorMail);
+    return;
+  }
+  if (!MailClient.sendMail(&smtp, &mailActivSchedule)) {
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
   } else {
-      Serial.println("✅ Correo enviado con éxito");
+    Serial.println("✅ Correo enviado con éxito");
   }
   ESP_MAIL_PRINTF("💾 Memoria libre tras envío: %d\n", MailClient.getFreeHeap());
   smtp.closeSession();
   mailActiveScheduleCheck = true;
 }
 /* Mail No ACtive Schedule */
-void mailNoActiveSchedule(String message){
+void mailNoActiveSchedule() {
   nowTime = rtc.getTime();
   date = rtc.getDate();
   currentMonth = rtc.getMonth() + 1;
-  bool sensoresGuardados = verifyStoredData(currentDay, currentMonth);
-  bool riegoGuardado = verifyDripStored(currentDay, currentMonth);
+  String message = printMonthlyDataJson(currentMonth, currentYear);  // Obtenemos el mensaje
   snprintf(textMsg, sizeof(textMsg),
-         "%s \n%s \n"
-         "SmartDrip%s: Fuera de horario activo de riego. \n"
-         "RTC: con fecha: %s | hora: %s\n"
-         "Datos de configuración guardados: \n"
-         "  - Tiempo de riego: %d min. \n"
-         "  - Límite de humedad: %d%% \n"
-         "  - Horario de riego: %s - %s\n"
-         "  - Humedad sustrato: %d%% \n"
-         "Datos del día %d:\n"
-         "  - Sensores: %s\n"
-         "  - Riego: %s\n\n"
-         "Datos almacenados del mes %d:\n%s\n"
-         "Estado de la memoria:\n"
-         "  - Total: %d bytes\n"
-         "  - Usada: %d bytes\n"
-         "  - Libre: %d bytes\n"
-         "Errores recientes en el envío de correos:\n"
-         "  - Conexión SMTP: %s\n"
-         "  - Envío de correo: %s\n",
-         idSDHex.c_str(), idUser.c_str(), idSmartDrip.c_str(),
-         date.c_str(), nowTime.c_str(),
-         dripTimeLimit, dripHumidityLimit, startTime.c_str(), endTime.c_str(),
-         substrateHumidity,
-         currentDay,
-         sensoresGuardados ? "Sí" : "No",
-         riegoGuardado ? "Sí" : "No",
-         currentMonth, message.c_str(),
-         totalHeap, usedHeap, freeHeap,
-         showErrorMailConnect.c_str(), showErrorMail.c_str());
+        "🌙 *SmartDrip: Fin de horario activo*\n"
+        "🔹 Dispositivo: SmartDrip%s\n"
+        "🔹 Usuario: %s (%s)\n\n"
+        "🕒 Hora actual (RTC): %s | %s\n\n"
+        "⚙️ *Configuración activa:*\n"
+        "• Tiempo de riego: %d min\n"
+        "• Límite de humedad: %d%%\n"
+        "• Horario: %s - %s\n"
+        "• Humedad del sustrato: %d%%\n\n"
+        "📅 *Datos del día %d:*\n"
+        "• Sensores activos: %s\n"
+        "• ¿Se regó?: %s\n\n"
+        "🗓 *Resumen del mes %d:*\n"
+        "%s\n"
+        "💾 *Estado de memoria SPIFFS:*\n"
+        "• Total: %d bytes\n"
+        "• Usada: %d bytes\n"
+        "• Libre: %d bytes\n\n"
+        "⚠️ *Errores recientes en correo:*\n"
+        "• Conexión SMTP: %s\n"
+        "• Envío de correo: %s\n",
+        idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
+        date.c_str(), nowTime.c_str(),
+        dripTimeLimit, dripHumidityLimit,
+        startTime.c_str(), endTime.c_str(),
+        substrateHumidity,
+        currentDay,
+        (substrateHumidity > -1) ? "Sí" : "No",
+        dripActived ? "Sí" : "No",
+        currentMonth, message.c_str(),
+        totalHeap, usedHeap, freeHeap,
+        showErrorMailConnect.c_str(), showErrorMail.c_str());
+
   finalMessage = String(textMsg);                         
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
   mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+    updateErrorLog(smtp.errorReason(), showErrorMail);                                 
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
-    saveMailError("lastMailError", smtp.errorReason());
-  }else{
-    Serial.println("Correo enviado con exito");
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  } else {
+    Serial.println("📧 Correo enviado con éxito");
   }
-  ESP_MAIL_PRINTF("Liberar memoria: %d\n", MailClient.getFreeHeap());
+  ESP_MAIL_PRINTF("🧠 Liberar memoria: %d\n", MailClient.getFreeHeap());
   smtp.closeSession();
   mailNoActiveScheduleCheck = true;
 }
 /* Mail Drip On */
-void mailSmartDripOn(){
-  nowTime = rtc.getTime();  //Probar si no es necesario actualizar hora y fecha para el envío del mail  
-  date = rtc.getDate(); 
+void mailSmartDripOn() {
+  nowTime = rtc.getTime();
+  date = rtc.getDate();
   snprintf(textMsg, sizeof(textMsg),
-           "%s \n%s \n"
-           "Con fecha: %s\n"
-           "Riego conectado correctamente en Smart Drip%s a las: %s\n"
-           "Tiempo de riego: %d min. \n"
-           "Límite de humedad de riego: %d%% \n"
-           "Humedad sustrato: %d%% \n",
-           idSDHex.c_str(),                // ID del SD en formato string
-           idUser.c_str(),                 // ID del usuario
-           date.c_str(),                   // Fecha
-           idSmartDrip.c_str(),            // ID del SmartDrip
-           nowTime.c_str(),                // Hora actual
-           dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidity,                   // Límite de humedad para riego
-           substrateHumidity);             // Humedad del sustrato
+        "💧 *Riego iniciado correctamente*\n"
+        "🔹 Dispositivo: SmartDrip%s\n"
+        "🔹 Usuario: %s (%s)\n\n"
+        "🗓 Fecha: %s\n"
+        "🕒 Hora de activación: %s\n\n"
+        "⚙️ *Parámetros del riego:*\n"
+        "• Duración: %d min\n"
+        "• Límite de humedad: %d%%\n"
+        "• Humedad actual del sustrato: %d%%\n",
+        idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
+        date.c_str(), nowTime.c_str(),
+        dripTimeLimit,
+        dripHumidity,
+        substrateHumidity);
   finalMessage = String(textMsg);
   mailDripOn.text.content = finalMessage.c_str();
   mailDripOn.text.charSet = "us-ascii";
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+  if (!smtp.connect(&session)) {
+    updateErrorLog(smtp.errorReason(), showErrorMail);
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailDripOn)){
-    saveMailError("lastMailError", smtp.errorReason());
-  }else{
-    Serial.println("Correo enviado con exito");
+  if (!MailClient.sendMail(&smtp, &mailDripOn)) {
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  } else {
+    Serial.println("📩 Mail de inicio de riego enviado.");
   }
-  ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
+  ESP_MAIL_PRINTF("🧠 Memoria tras envío: %d\n", MailClient.getFreeHeap());
   mailDripOnSended = true;
   smtp.closeSession();
 }
 /* Mail Drip Off */
-void mailSmartDripOff(){
-  nowTime = rtc.getTime();  //Probar si no es necesario actualizar hora y fecha para el envío del mail  
-  date = rtc.getDate(); 
+void mailSmartDripOff() {
+  nowTime = rtc.getTime();
+  date = rtc.getDate();
   snprintf(textMsg, sizeof(textMsg),
-           "%s \n%s \n"
-           "Con fecha: %s\n"
-           "Riego finalizado correctamente en Smart Drip%s a las: %s\n"
-           "Tiempo de riego: %d min. \n"
-           "Límite de humedad de riego: %d%% \n"
-           "Humedad sustrato: %d%% \n",
-           idSDHex.c_str(),                // ID del SD en formato string
-           idUser.c_str(),                 // ID del usuario
-           date.c_str(),                   // Fecha
-           idSmartDrip.c_str(),            // ID del SmartDrip
-           nowTime.c_str(),                // Hora actual
-           dripTimeLimit,                  // Tiempo de riego en minutos
-           dripHumidity,                   // Límite de humedad para riego
-           substrateHumidity);             // Humedad del sustrato
+        "💧 *Riego finalizado correctamente*\n"
+        "🔹 Dispositivo: SmartDrip%s\n"
+        "🔹 Usuario: %s (%s)\n\n"
+        "🗓 Fecha: %s\n"
+        "🕒 Hora de finalización: %s\n\n"
+        "⚙️ *Parámetros del riego:*\n"
+        "• Duración programada: %d min\n"
+        "• Límite de humedad: %d%%\n\n"
+        "🌱 *Lecturas tras el riego:*\n"
+        "• Humedad sustrato final: %d%%\n"
+        "• Humedad ambiental: %d%%\n"
+        "• Temperatura ambiente: %d°C\n",
+        idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
+        date.c_str(), nowTime.c_str(),
+        dripTimeLimit,
+        dripHumidity,
+        substrateHumidity,
+        humidity,
+        temp);
   finalMessage = String(textMsg);
   mailDripOff.text.content = finalMessage.c_str();
   mailDripOff.text.charSet = "us-ascii";
   mailDripOff.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOff.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+  if (!smtp.connect(&session)) {
+    updateErrorLog(smtp.errorReason(), showErrorMail);
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailDripOff)){
-    saveMailError("lastMailError", smtp.errorReason());
-  }else{
-    Serial.println("Correo enviado con exito");
+  if (!MailClient.sendMail(&smtp, &mailDripOff)) {
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  } else {
+    Serial.println("📩 Mail de fin de riego enviado.");
   }
-  ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
+  ESP_MAIL_PRINTF("🧠 Memoria tras envío: %d\n", MailClient.getFreeHeap());
   mailDripOffSended = true;
+  smtp.closeSession();
+}
+/* Mail Annual Report */
+void mailAnnualReport() {
+  if (!mailAnnualReportActive || mailAnnualReportSended) return;
+  int currentYear = rtc.getYear();
+  String fullReport = "";
+  for (int m = 1; m <= 12; m++) {
+    String monthName = getMonthName(m);
+    String data = printMonthlyDataJson(m, currentYear, false);
+    if (data != "") {
+      fullReport += "📅 ";
+      fullReport += monthName;
+      fullReport += ":\n";
+      fullReport += data;
+      fullReport += "\n";
+    }
+  }
+  snprintf(textMsg, sizeof(textMsg),
+           "📩 *Informe anual de Smart Drip*\n\n"
+           "📌 **Dispositivo:** %s\n"
+           "👤 **Usuario:** %s\n"
+           "🔢 **ID Smart Drip:** %s\n"
+           "📅 **Año:** %d\n\n"
+           "%s",
+           idSDHex.c_str(),
+           idUser.c_str(),
+           idSmartDrip.c_str(),
+           currentYear,
+           fullReport.c_str());
+  finalMessage = String(textMsg);
+  mailAnualReport.sender.name = "Smart Drip System";
+  mailAnualReport.sender.email = AUTHOR_EMAIL;
+  mailAnualReport.subject = "📊 Informe Anual Smart Drip";
+  mailAnualReport.addRecipient("Pablo", "falder24@gmail.com");
+  mailAnualReport.text.content = finalMessage.c_str();
+  mailAnualReport.text.charSet = "us-ascii";
+  mailAnualReport.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+  mailAnualReport.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
+  if (!smtp.connect(&session)) {
+    updateErrorLog(smtp.errorReason(), showErrorMail);
+    return;
+  }
+  if (!MailClient.sendMail(&smtp, &mailAnualReport)) {
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  } else {
+    Serial.println("📧 Informe anual enviado correctamente");
+    mailAnnualReportSended = true;
+  }
   smtp.closeSession();
 }
 /* Mail Solenoid Valve Error */
@@ -1193,11 +1084,11 @@ void mailErrorValve(){
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+    updateErrorLog(smtp.errorReason(), showErrorMail);                                
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrValve)){
-    saveMailError("lastMailError", smtp.errorReason());
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1220,11 +1111,11 @@ void mailErrorDHT11(){
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+    updateErrorLog(smtp.errorReason(), showErrorMail);                                  
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
-    saveMailError("lastMailError", smtp.errorReason());
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
   }else{
     Serial.println("Correo enviado con exito");
   }
@@ -1248,43 +1139,16 @@ void mailErrorSensorHigro(){
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
+    updateErrorLog(smtp.errorReason(), showErrorMail);                                  
     return;
   }
   if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
-    saveMailError("lastMailError", smtp.errorReason());
+    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
   }else{
     Serial.println("Correo enviado con exito");
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
   mailErrorHigroSended = true;
-  smtp.closeSession();
-}
-/* Mail Start Calibration */
-void mailCalibrateSensor(){
-  snprintf(textMsg, sizeof(textMsg),
-           "%s \n%s \n"
-           "El sensor de humedad del sustrato del Smart Drip %s necesita ser calibrado y se ha iniciado el proceso de calibración. \n"
-           "Proceda a su inspección o llame al servicio técnico \n",
-           idSDHex.c_str(),                // ID del SD en formato string
-           idUser.c_str(),                 // ID del usuario
-           idSmartDrip.c_str());           // ID del dispositivo SmartDrip
-  finalMessage = String(textMsg);
-  mailCalibratSensor.text.content = finalMessage.c_str();
-  mailCalibratSensor.text.charSet = "us-ascii";
-  mailCalibratSensor.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailCalibratSensor.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
-    return;
-  }
-  if(!MailClient.sendMail(&smtp, &mailCalibratSensor)){
-    saveMailError("lastMailError", smtp.errorReason());
-  }else{
-    Serial.println("Correo enviado con exito");
-  }
-  ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
-  mailCalibrateSensorSended = true;
   smtp.closeSession();
 }
 /* Check Mail Callback */
@@ -1309,89 +1173,9 @@ void smtpCallback(SMTP_Status status){
     Serial.println(".....................\n");
   }
 }
-/* Mail Monthly Data */
-bool mailMonthData(String message) {
-  date = rtc.getDate();
-  nowTime = rtc.getHour();
-  int prevMonth = currentMonth - 1;          // Obtener el mes anterior al actual
-  if (prevMonth == 0) prevMonth = 12;        
-  snprintf(textMsg, sizeof(textMsg),
-           "📩 *Informe mensual de Smart Drip*\n\n"
-           "📌 **Dispositivo:** %s\n"
-           "👤 **Usuario:** %s\n"
-           "🔢 **ID Smart Drip:** %s\n"
-           "📅 **Fecha de envío:** %s\n"
-           "📊 **Datos correspondientes a:** %s\n\n"
-           "%s\n",
-           idSDHex.c_str(),                  // ID del SD
-           idUser.c_str(),                   // ID del usuario
-           idSmartDrip.c_str(),              // ID del Smart Drip
-           date.c_str(),                     // Fecha del envío
-           getMonthName(prevMonth).c_str(),  // Nombre del mes anterior
-           message.c_str());                 // Mensaje mensual con los datos
-  finalMessage = String(textMsg);            // Convertir a String para el envío
-  mailMonthlyData.text.content = finalMessage.c_str();
-  mailMonthlyData.text.charSet = "us-ascii";
-  mailMonthlyData.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-  mailMonthlyData.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if (!smtp.connect(&session)) {
-    saveMailError("erSMTPServ", smtp.errorReason());                                   
-    return false;  // ❌ Falló la conexión SMTP
-  }
-  if (!MailClient.sendMail(&smtp, &mailMonthlyData)) {
-    saveMailError("lastMailError", smtp.errorReason());
-    return false;  // ❌ Falló el envío del correo
-  } else {
-    Serial.println("✅ Correo mensual enviado con éxito.");
-  }
-  ESP_MAIL_PRINTF("🛠 Liberar memoria: %d/n", MailClient.getFreeHeap()); 
-  smtp.closeSession();
-  return true;  // ✅ Envío exitoso
-}
 /* Get Month Name */
 String getMonthName(int month) {
   const char* months[] = {"Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"};
   return (month >= 1 && month <= 12) ? String(months[month - 1]) : "Desconocido";
-}
-/* Save SMTP errors in memory */
-void saveMailError(const char *key, String newError) {
-  preferences.begin("sensor_data", false);             // Modo escritura
-  String storedError = preferences.getString(key, ""); // Leer el error previo almacenado
-  if (storedError != newError) {                       // Guardar solo si el nuevo error es diferente del anterior
-      preferences.putString(key, newError);
-      Serial.println("⚠ Nuevo error guardado en memoria:");
-      Serial.println(newError);
-  } else {
-      Serial.println("⚠ Error detectado, pero ya estaba registrado. No se sobrescribe.");
-  }
-  preferences.end();  // Cerrar memoria
-}
-/* Clean Data Preferences */
-void cleanData() {
-  preferences.begin("sensor_data", false);  // Modo escritura
-  // Eliminar arrays mensuales por clave (basado en mes actual)
-  char key[20];
-  snprintf(key, sizeof(key), "Higro_%d", currentMonth);
-  preferences.remove(key);
-  snprintf(key, sizeof(key), "Humedad_%d", currentMonth);
-  preferences.remove(key);
-  snprintf(key, sizeof(key), "Temp_%d", currentMonth);
-  preferences.remove(key);
-  snprintf(key, sizeof(key), "Drip_%d", currentMonth);
-  preferences.remove(key);
-  snprintf(key, sizeof(key), "FlagSens_%d", currentMonth);
-  preferences.remove(key);
-  snprintf(key, sizeof(key), "FlagDrip_%d", currentMonth);
-  preferences.remove(key);
-  preferences.end();
-  // Resetear arrays en RAM
-  memset(substrateData, -100, sizeof(substrateData));
-  memset(humidityData, -100, sizeof(humidityData));
-  memset(tempData, -100, sizeof(tempData));
-  memset(dripData, false, sizeof(dripData));
-  memset(dataStoredFlag, false, sizeof(dataStoredFlag));
-  memset(dripStoredFlag, false, sizeof(dripStoredFlag));
-  Serial.printf("🗑 Datos del mes %d eliminados de Preferences.\n", currentMonth);
-  Serial.println("🔄 Arrays reiniciados en RAM.");
 }
