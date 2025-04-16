@@ -1,7 +1,7 @@
 #include "storageManager.h"
 #include <ArduinoJson.h>
 #include <FS.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 
 const char* path = "/smartdrip.json";
 
@@ -15,7 +15,7 @@ String getCurrentDateKey() {
 }
 // Verifica si hay datos para una fecha dada
 bool isDataStoredForDate(const String& dateKey) {
-  File file = SPIFFS.open(path, "r");
+  File file = LittleFS.open(path, "r");
   if (!file) return false;
   DynamicJsonDocument doc(4096);
   if (deserializeJson(doc, file)) {
@@ -37,7 +37,7 @@ void storeOrUpdateDailyDataJson(int day, int month, int year,
     snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
     dateKey = String(buffer);
   }
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   DynamicJsonDocument doc(8192);  // Tamaño mayor para evitar problemas con muchos días
   if (file) {
     deserializeJson(doc, file);
@@ -57,7 +57,7 @@ void storeOrUpdateDailyDataJson(int day, int month, int year,
   if (forceOverwrite || dayData["humidity"].isNull())  dayData["humidity"] = newHumidity;
   if (forceOverwrite || dayData["temp"].isNull())      dayData["temp"]     = newTemp;
   if (forceOverwrite || dayData["drip"].isNull())      dayData["drip"]     = dripActive;
-  file = SPIFFS.open("/data.json", "w");
+  file = LittleFS.open("/data.json", "w");
   if (serializeJsonPretty(doc, file) == 0) {
     Serial.println("❌ Error al guardar JSON");
   } else {
@@ -66,25 +66,23 @@ void storeOrUpdateDailyDataJson(int day, int month, int year,
   file.close();
 }
 void checkStorageFile() {
-  if (!SPIFFS.exists("/data.json")) {
+  Serial.println("📁 [checkStorageFile] Verificando existencia de data.json...");
+  if (!LittleFS.exists("/data.json")) {
     Serial.println("📂 data.json no existe. Creando archivo vacío...");
-    File file = SPIFFS.open("/data.json", "w");
-    if (!file) {
+    File file = LittleFS.open("/data.json", "w");
+    if (file) {
+      file.print("{}");
+      file.close();
+      Serial.println("✔ data.json creado correctamente.");
+    } else {
       Serial.println("❌ No se pudo crear data.json");
-      return;
     }
-    DynamicJsonDocument doc(512);
-    doc["fecha_creacion"] = "0000-00-00";
-    doc["data"] = JsonObject();  // Estructura vacía para datos
-    serializeJson(doc, file);
-    file.close();
-    Serial.println("✔ data.json creado correctamente.");
   } else {
     Serial.println("✔ Archivo data.json encontrado.");
   }
 }
 void updateErrorLog(String smtpError, String mailError) {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   DynamicJsonDocument doc(4096);
   if (file) {
     deserializeJson(doc, file);
@@ -92,7 +90,7 @@ void updateErrorLog(String smtpError, String mailError) {
   }
   doc["errores"]["smtp"] = smtpError;
   doc["errores"]["envio"] = mailError;
-  file = SPIFFS.open("/data.json", "w");
+  file = LittleFS.open("/data.json", "w");
   if (!file) {
     Serial.println("❌ No se pudo abrir data.json para escritura");
     return;
@@ -105,7 +103,7 @@ void updateErrorLog(String smtpError, String mailError) {
   file.close();
 }
 void printDailyData() {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   if (!file) {
     Serial.println("❌ No se pudo abrir data.json");
     return;
@@ -134,7 +132,7 @@ void printDailyData() {
   }
 }
 String printMonthlyDataJson(int month, int year, bool debug) {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   if (!file) {
     if (debug) Serial.println("❌ No se pudo abrir data.json");
     return "";

@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <SimpleDHT.h>
 #include <NTPClient.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESP_Mail_Client.h>
 #include <ESP32Time.h>
@@ -174,15 +174,33 @@ bool checkTimer = false;             // Indica si hay un proceso de riego en mar
 const unsigned long pulseTime = 100; // Duración del pulso en milisegundos = 50ms
 unsigned long startTimePulse = 0;
 int closeValveCounter = 10;
+bool mountLittleFS(bool allowFormat = false) {
+  Serial.println("🔁 Intentando montar LittleFS...");
+  if (!LittleFS.begin(allowFormat)) {
+    Serial.println("❌ No se pudo montar LittleFS.");
+    if (!allowFormat) {
+      Serial.println("➡️ Puedes forzar el formateo llamando a mountLittleFS(true).");
+    }
+    return false;
+  }
+  Serial.println("✔ LittleFS montado correctamente.");
+  Serial.printf("📦 Tamaño total: %lu bytes\n", LittleFS.totalBytes());
+  Serial.printf("📂 Espacio usado: %lu bytes\n", LittleFS.usedBytes());
+  return true;
+}
 void setup() {
   Serial.begin(9600);
-  // Montar SPIFFS
-  if (!SPIFFS.begin(true)) {
-    Serial.println("❌ No se pudo montar SPIFFS, se requiere formateo.");
-  } else {
-    Serial.println("✔ SPIFFS montado correctamente.");
-    Serial.printf("📦 Tamaño total: %u bytes\n", SPIFFS.totalBytes());
-    Serial.printf("📂 Espacio usado: %u bytes\n", SPIFFS.usedBytes());
+  delay(1000);
+  Serial.println("🔁 [SETUP] Iniciado tras reinicio o arranque...");
+  // Montar LittleFS
+  if (!mountLittleFS(false)) {
+    Serial.println("⚠️ Intentando montar con formateo (recuperación)...");
+    if (mountLittleFS(true)) {
+      Serial.println("⚠️ LittleFS fue formateado por recuperación.");
+    } else {
+      Serial.println("❌ Falló incluso tras formatear. Problema grave.");
+      return;
+    }
   }
   // Inicializaciones esenciales
   checkStorageFile();           // Asegura que data.json exista
@@ -560,6 +578,7 @@ void flowMeter() {
 }
 /* Create and Encrypt ID */
 void createAndVerifyID() {
+  Serial.println("🔎 [createAndVerifyID] Iniciando verificación de ID...");
   String macAddress = WiFi.macAddress();
   uint8_t macBytes[6];
   sscanf(macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
@@ -568,29 +587,46 @@ void createAndVerifyID() {
   idNumber = crc32(macBytes, 6);
   String generatedID = String(idNumber, HEX);
   idSDHex = generatedID;
-  // Leer JSON
-  File file = SPIFFS.open("/config.json", "r");
+  File file = LittleFS.open("/config.json", "r");
+  DynamicJsonDocument doc(1024);
   if (!file) {
     Serial.println("❌ No se pudo abrir config.json para validar ID");
     return;
   }
-  DynamicJsonDocument doc(1024);
-  deserializeJson(doc, file);
+  DeserializationError error = deserializeJson(doc, file);
   file.close();
-  String storedID = doc["config"]["idSDHex"].as<String>();
+  if (error) {
+    Serial.print("❌ Error leyendo config.json: ");
+    Serial.println(error.c_str());
+    Serial.println("🚫 No se continuará para evitar sobrescribir datos.");
+    return;
+  }
+  if (!doc.containsKey("config") || !doc["config"].is<JsonObject>()) {
+    Serial.println("⚠️ El campo 'config' no existe o es inválido. Abortando escritura.");
+    return;
+  }
+  String storedID = doc["config"]["idSDHex"] | "";
   if (storedID == "") {
     Serial.println("📌 ID no encontrado en JSON. Guardando nuevo ID...");
-    doc["config"]["idSDHex"] = generatedID;
   } else if (storedID != generatedID) {
     Serial.println("⚠️ ID en JSON no coincide con el generado.");
     Serial.printf("➡️ Corrigiendo: %s -> %s\n", storedID.c_str(), generatedID.c_str());
-    doc["config"]["idSDHex"] = generatedID;
   } else {
     Serial.println("✅ ID en JSON verificado correctamente");
+    return;
   }
-  file = SPIFFS.open("/config.json", "w");
+  // ✅ Si llegamos aquí, es seguro modificar
+  doc["config"]["idSDHex"] = generatedID;
+  Serial.println("📤 [createAndVerifyID] JSON antes de guardar:");
+  serializeJsonPretty(doc, Serial);
+  file = LittleFS.open("/config.json", "w");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir config.json para escritura");
+    return;
+  }
   serializeJsonPretty(doc, file);
   file.close();
+  Serial.println("✅ ID actualizado en config.json correctamente.");
 }
 /* New Start WiFi */
 void InitWiFi() {
@@ -634,7 +670,6 @@ void InitWiFi() {
     Serial.println("\n\n❌ No se pudo conectar a la red WiFi.");
   }
 }
-
 /* Check WiFi Reconnection */
 void handleWiFiReconnection() {
   if (millis() - lastConnectionTry >= tryInterval) {  // Comprobación de la conexión de la red WiFi cada hora
@@ -648,21 +683,21 @@ void handleWiFiReconnection() {
 }
 /* Function to save the last synchronized time in NVS memory */
 void saveLastSyncTime(time_t timestamp) {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   DynamicJsonDocument doc(4096);
   if (file) {
     deserializeJson(doc, file);
     file.close();
   }
   doc["ultima_sincronizacion"] = (uint64_t)timestamp;
-  file = SPIFFS.open("/data.json", "w");
+  file = LittleFS.open("/data.json", "w");
   serializeJsonPretty(doc, file);
   file.close();
   Serial.printf("🕒 Hora de sincronización guardada: %llu\n", (uint64_t)timestamp);
 }
 /* Function to retrieve the last synchronized time from NVS memory */
 time_t getLastSyncTime() {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   if (!file) return 0;
   DynamicJsonDocument doc(4096);
   DeserializationError error = deserializeJson(doc, file);
@@ -718,7 +753,7 @@ void showMemoryStatus() {
   Serial.println("--------------------------------");
 }
 void loadErrorLogFromJson() {
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   if (!file) {
     Serial.println("❌ No se pudo abrir data.json para leer errores");
     return;
@@ -743,7 +778,7 @@ void clearOldDataIfNewYear() {
   struct tm* timeinfo = localtime(&now);
   int currentYearToKeep = 1900 + timeinfo->tm_year;
   if (lastYearCleaned == currentYearToKeep) return;  // Ya se hizo limpieza este año
-  File file = SPIFFS.open("/data.json", "r");
+  File file = LittleFS.open("/data.json", "r");
   if (!file) {
     Serial.println("❌ No se pudo abrir data.json para limpieza");
     return;
@@ -767,7 +802,7 @@ void clearOldDataIfNewYear() {
   }
   doc["data"] = filtered;
   doc.remove("data_filtrada");
-  file = SPIFFS.open("/data.json", "w");
+  file = LittleFS.open("/data.json", "w");
   if (serializeJsonPretty(doc, file) == 0) {
     Serial.println("❌ Error al escribir datos tras limpieza anual");
   } else {
@@ -780,7 +815,6 @@ void clearOldDataIfNewYear() {
     mailAnnualReportSended = true;   // Evitar reenvío
   }
 }
-
 /* Mail Setup */
 void setupMail(SMTP_Message& msg, const char* subject) {
   msg.sender.name = "Smart Drip System";
@@ -920,7 +954,6 @@ void mailNoActiveSchedule() {
         currentMonth, message.c_str(),
         totalHeap, usedHeap, freeHeap,
         showErrorMailConnect.c_str(), showErrorMail.c_str());
-
   finalMessage = String(textMsg);                         
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
