@@ -28,42 +28,60 @@ bool isDataStoredForDate(const String& dateKey) {
 }
 // Guarda o actualiza datos diarios
 void storeOrUpdateDailyDataJson(int day, int month, int year,
-                                int newSubstrate, int newHumidity, int newTemp,
-                                bool dripActive, bool forceOverwrite,
-                                String customDateKey) {
-  String dateKey = customDateKey;
-  if (dateKey == "") {
-    char buffer[11];
-    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
-    dateKey = String(buffer);
-  }
-  File file = LittleFS.open("/data.json", "r");
-  DynamicJsonDocument doc(8192);  // Tamaño mayor para evitar problemas con muchos días
-  if (file) {
-    deserializeJson(doc, file);
-    file.close();
-  }
-  JsonObject data = doc["data"];
-  JsonObject dayData;
-  if (!data[dateKey].isNull()) {
-    dayData = data[dateKey];
-    Serial.printf("🔄 Actualizando datos del día %s\n", dateKey.c_str());
-  } else {
-    Serial.printf("🆕 Guardando nuevos datos para el día %s\n", dateKey.c_str());
-    dayData = data.createNestedObject(dateKey);
-  }
-  // Condicionales para no sobreescribir si ya existen
-  if (forceOverwrite || dayData["substrate"].isNull()) dayData["substrate"] = newSubstrate;
-  if (forceOverwrite || dayData["humidity"].isNull())  dayData["humidity"] = newHumidity;
-  if (forceOverwrite || dayData["temp"].isNull())      dayData["temp"]     = newTemp;
-  if (forceOverwrite || dayData["drip"].isNull())      dayData["drip"]     = dripActive;
-  file = LittleFS.open("/data.json", "w");
-  if (serializeJsonPretty(doc, file) == 0) {
-    Serial.println("❌ Error al guardar JSON");
-  } else {
-    Serial.println("✅ Datos guardados/actualizados correctamente");
-  }
-  file.close();
+  int newSubstrate, int newHumidity, int newTemp,
+  bool dripActive, bool forceOverwrite,
+  String customDateKey) {
+String dateKey = customDateKey;
+if (dateKey == "") {
+char buffer[11];
+snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
+dateKey = String(buffer);
+}
+Serial.printf("📥 [storeOrUpdateDailyDataJson] Intentando guardar datos para: %s\n", dateKey.c_str());
+File file = LittleFS.open("/data.json", "r");
+DynamicJsonDocument doc(8192);  // Tamaño mayor para evitar problemas con muchos días
+if (file) {
+DeserializationError error = deserializeJson(doc, file);
+file.close();
+if (error) {
+Serial.print("⚠️ Error al parsear data.json: ");
+Serial.println(error.c_str());
+doc.clear();  // Limpiar por si quedó corrupto
+}
+} else {
+Serial.println("⚠️ data.json no existe. Se creará nuevo documento JSON.");
+}
+// Asegurarse que existe el objeto 'data'
+if (!doc.containsKey("data")) {
+Serial.println("⚠️ Sección 'data' no encontrada. Se crea nueva.");
+doc.createNestedObject("data");
+}
+JsonObject data = doc["data"];
+JsonObject dayData;
+if (!data[dateKey].isNull()) {
+dayData = data[dateKey];
+Serial.printf("🔄 Actualizando datos del día %s\n", dateKey.c_str());
+} else {
+Serial.printf("🆕 Guardando nuevos datos para el día %s\n", dateKey.c_str());
+dayData = data.createNestedObject(dateKey);
+}
+// Condicionales para no sobreescribir si ya existen
+if (forceOverwrite || dayData["substrate"].isNull()) dayData["substrate"] = newSubstrate;
+if (forceOverwrite || dayData["humidity"].isNull())  dayData["humidity"] = newHumidity;
+if (forceOverwrite || dayData["temp"].isNull())      dayData["temp"]     = newTemp;
+if (forceOverwrite || dayData["drip"].isNull())      dayData["drip"]     = dripActive;
+file = LittleFS.open("/data.json", "w");
+if (!file) {
+Serial.println("❌ No se pudo abrir data.json para escritura");
+return;
+}
+if (serializeJsonPretty(doc, file) == 0) {
+Serial.println("❌ Error al guardar JSON");
+} else {
+Serial.println("✅ Datos guardados/actualizados correctamente:");
+serializeJsonPretty(doc, Serial);  // Mostramos el JSON completo por consola
+}
+file.close();
 }
 void checkStorageFile() {
   Serial.println("📁 [checkStorageFile] Verificando existencia de data.json...");
@@ -77,10 +95,61 @@ void checkStorageFile() {
     } else {
       Serial.println("❌ No se pudo crear data.json");
     }
-  } else {
-    Serial.println("✔ Archivo data.json encontrado.");
+    return;
   }
+  Serial.println("✔ Archivo data.json encontrado.");
+  File file = LittleFS.open("/data.json", "r");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir data.json");
+    return;
+  }
+  DynamicJsonDocument doc(8192);
+  if (deserializeJson(doc, file)) {
+    file.close();
+    Serial.println("❌ Error al leer el archivo JSON");
+    return;
+  }
+  file.close();
+  JsonObject data = doc["data"];
+  if (!data) {
+    Serial.println("⚠️ No hay sección 'data' en el JSON");
+    return;
+  }
+  // 🔎 Buscar el mes más reciente en los datos
+  int latestYear = 0, latestMonth = 0;
+  for (JsonPair kv : data) {
+    String fecha = kv.key().c_str();
+    if (fecha.length() != 10) continue;
+    int year = fecha.substring(0, 4).toInt();
+    int month = fecha.substring(5, 7).toInt();
+    if (year > latestYear || (year == latestYear && month > latestMonth)) {
+      latestYear = year;
+      latestMonth = month;
+    }
+  }
+  if (latestYear == 0) {
+    Serial.println("⚠️ No se encontraron fechas válidas en los datos.");
+    return;
+  }
+  Serial.printf("🔎 Mostrando datos del mes más reciente: %04d-%02d\n", latestYear, latestMonth);
+  int count = 0;
+  for (JsonPair kv : data) {
+    String fecha = kv.key().c_str();
+    int year = fecha.substring(0, 4).toInt();
+    int month = fecha.substring(5, 7).toInt();
+    if (year == latestYear && month == latestMonth) {
+      JsonObject dia = kv.value().as<JsonObject>();
+      Serial.printf("📆 %s:\n", fecha.c_str());
+      Serial.printf("   🌱 Humedad sustrato: %d%%\n", dia["substrate"].as<int>());
+      Serial.printf("   💧 Humedad ambiente: %d%%\n", dia["humidity"].as<int>());
+      Serial.printf("   🌡  Temperatura: %d°C\n", dia["temp"].as<int>());
+      Serial.printf("   🚿 Riego activado: %s\n", dia["drip"].as<bool>() ? "Sí" : "No");
+      count++;
+    }
+  }
+  Serial.printf("📊 Se mostraron %d días con datos del mes más reciente.\n", count);
 }
+
 void updateErrorLog(String smtpError, String mailError) {
   File file = LittleFS.open("/data.json", "r");
   DynamicJsonDocument doc(4096);
@@ -145,24 +214,35 @@ String printMonthlyDataJson(int month, int year, bool debug) {
   }
   file.close();
   JsonObject data = doc["data"];
-  if (data.isNull()) return "";
+  if (data.isNull()) {
+    if (debug) Serial.println("⚠️ Sección 'data' no encontrada.");
+    return "";
+  }
   String result = "";
   char lineBuffer[128];
-  int lastHumidity = -100, lastTemp = -100, lastSubstrate = -100;
   for (int day = 1; day <= 31; day++) {
     char dateKey[11];
     snprintf(dateKey, sizeof(dateKey), "%04d-%02d-%02d", year, month, day);
     if (data[dateKey].isNull()) continue;
     JsonObject dayData = data[dateKey];
-    if (!dayData["humidity"].isNull())  lastHumidity = dayData["humidity"].as<int>();
-    if (!dayData["temp"].isNull())      lastTemp = dayData["temp"].as<int>();
-    if (!dayData["substrate"].isNull()) lastSubstrate = dayData["substrate"].as<int>();
-    bool drip = !dayData["drip"].isNull() && dayData["drip"].as<bool>();
-    bool hasData = lastHumidity != -100 || lastTemp != -100 || lastSubstrate != -100 || drip;
-    if (!hasData) continue;
+    // Solo usamos los datos del día si existen
+    bool hasSubstrate = !dayData["substrate"].isNull();
+    bool hasHumidity = !dayData["humidity"].isNull();
+    bool hasTemp     = !dayData["temp"].isNull();
+    bool hasDrip     = !dayData["drip"].isNull();
+    if (!hasSubstrate && !hasHumidity && !hasTemp && !hasDrip) continue;
+    int humidity = hasHumidity ? dayData["humidity"].as<int>() : -1;
+    int temp     = hasTemp     ? dayData["temp"].as<int>()     : -1;
+    int substrate= hasSubstrate? dayData["substrate"].as<int>(): -1;
+    bool drip    = hasDrip     ? dayData["drip"].as<bool>()    : false;
     snprintf(lineBuffer, sizeof(lineBuffer),
-             "Día %d: Riego: %s | Humedad sustrato: %d%% | Humedad ambiental: %d%% | Temp: %d°C\n",
-             day, drip ? "Sí" : "No", lastSubstrate, lastHumidity, lastTemp);
+             "🗓 Día %d | 🚿: %s | 🌱: %s | 💧: %s | 🌡: %s\n",
+             day,
+             drip ? "Sí" : "No",
+             hasSubstrate ? String(substrate).c_str() : "-",
+             hasHumidity  ? String(humidity).c_str()  : "-",
+             hasTemp      ? String(temp).c_str()      : "-");
+
     if (debug) Serial.print(lineBuffer);
     result += lineBuffer;
   }

@@ -251,6 +251,7 @@ void setup() {
   stopPulse();                       // Asegurar que no haya pulso activo
   getHigroValues();                  // Obtener primera lectura
   if (mailStartSystemActive) {
+    showMemoryStatus();
     mailStartSystem();               // Enviar correo de inicio de sistema
   }
 }
@@ -279,6 +280,7 @@ void loop() {
       getHigroValues();                                          
       getDHTValues();                                             
       storeOrUpdateDailyDataJson(currentDay, currentMonth, currentYear, substrateHumidity, humidity, temp, dripActived, true, dateKey);
+      showMemoryStatus();
     }                                                             
   }
   // Si hay riego activo al final del horario, marcar para guardar después
@@ -444,7 +446,7 @@ void finalizeDrip() {
           storeOrUpdateDailyDataJson(currentDay, currentMonth, currentYear,
                                      substrateHumidity, humidity, temp,
                                      true, true, dateKey);
-
+          showMemoryStatus();
           pendingStore = false;  // Limpiar flag
         }
       }
@@ -879,7 +881,7 @@ void mailActiveSchedule() {
         "• ¿Se regó?: %s\n\n"
         "🗓 *Resumen del mes %d:*\n"
         "%s\n"
-        "💾 *Estado de memoria SPIFFS:*\n"
+        "💾 *Estado de memoria LittleFS:*\n"
         "• Total: %d bytes\n"
         "• Usada: %d bytes\n"
         "• Libre: %d bytes\n\n"
@@ -936,7 +938,7 @@ void mailNoActiveSchedule() {
         "• ¿Se regó?: %s\n\n"
         "🗓 *Resumen del mes %d:*\n"
         "%s\n"
-        "💾 *Estado de memoria SPIFFS:*\n"
+        "💾 *Estado de memoria LittleFS:*\n"
         "• Total: %d bytes\n"
         "• Usada: %d bytes\n"
         "• Libre: %d bytes\n\n"
