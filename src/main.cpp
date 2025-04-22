@@ -15,7 +15,7 @@ const int MAX_CONNECT = 10;
 unsigned long lastConnectionTry = 0;
 const unsigned long tryInterval = 3600000;  // 1 hora en milisegundos
 wl_status_t state;
-void InitWiFi();
+void initWiFi();
 void handleWiFiReconnection();
 /* Función para calcular CRC32 */
 uint32_t crc32(const uint8_t *data, size_t length) {
@@ -72,8 +72,9 @@ bool mailNoActiveScheduleActive = true;
 bool mailSmartDripOnActive = true;
 bool mailSmartDripOffActive = true;
 bool mailAnnualReportActive = true;
-String showErrorMail, showErrorMailConnect, finalMessage = "";
-char errorMailConnect[256], errorMail[256], textMsg[4800];
+String showErrorMail, showErrorMailConnect, showErrorWiFi, showErrorSummary, fechaSMTP, fechaEnvio, fechaWiFi, finalMessage = "";
+char errorMailConnect[256], errorMail[256], errorBuffer[512], textMsg[4800];
+int smtpCount, envioCount, wifiCount = 0;
 /* Open/Close Solenoid Valve  */
 void openDripValve();
 void closeDripValve();
@@ -105,6 +106,7 @@ void showMemoryStatus();
 void loadErrorLogFromJson();  
 void clearOldDataIfNewYear();
 void createAndVerifyID();
+void dumpDataJsonToSerial();
 /* NTP server config */
 const char* ntpServer = "hora.roa.es"; // Servidor NTP para sincronizar la hora
 /* Terminal configuration for hygrometer and DHT11 */
@@ -207,7 +209,12 @@ void setup() {
   loadConfigFromJson();         // Cargar configuración desde config.json
   createAndVerifyID();          // Crear y guardar ID único si no existe
   loadErrorLogFromJson();       // Cargar errores anteriores desde JSON
-  InitWiFi();                   // Conexión WiFi
+  initWiFi();                   // Conexión WiFi
+  // 🛠 Solo si necesitas el backup (descomentalo si hace falta)
+  //if (Serial) {
+  //   delay(2000);
+  //   dumpDataJsonToSerial();
+  //}
   // Mostrar datos cargados
   Serial.println("🔧 Configuración inicial finalizada:");
   Serial.print("🆔 ID SmartDrip: ");
@@ -589,7 +596,7 @@ void createAndVerifyID() {
   idNumber = crc32(macBytes, 6);
   String generatedID = String(idNumber, HEX);
   idSDHex = generatedID;
-  File file = LittleFS.open("/config.json", "r");
+  File file = LittleFS.open("/config/config.json", "r");
   DynamicJsonDocument doc(1024);
   if (!file) {
     Serial.println("❌ No se pudo abrir config.json para validar ID");
@@ -621,7 +628,7 @@ void createAndVerifyID() {
   doc["config"]["idSDHex"] = generatedID;
   Serial.println("📤 [createAndVerifyID] JSON antes de guardar:");
   serializeJsonPretty(doc, Serial);
-  file = LittleFS.open("/config.json", "w");
+  file = LittleFS.open("/config/config.json", "w");
   if (!file) {
     Serial.println("❌ No se pudo abrir config.json para escritura");
     return;
@@ -630,46 +637,66 @@ void createAndVerifyID() {
   file.close();
   Serial.println("✅ ID actualizado en config.json correctamente.");
 }
-/* New Start WiFi */
-void InitWiFi() {
-  if (ssid.isEmpty() || pass.isEmpty()) {
-    Serial.println("⚠️ SSID o contraseña no definidos. No se intentará conectar a WiFi.");
+void dumpDataJsonToSerial() {
+  File file = LittleFS.open("/data.json", "r");
+  if (!file) {
+    Serial.println("❌ No se pudo abrir data.json");
     return;
   }
-  WiFi.begin(ssid.c_str(), pass.c_str());  // 👈 Usamos las variables cargadas desde config.json
+  Serial.println("\n📤 [dumpDataJsonToSerial] Inicio del volcado de data.json:\n");
+  while (file.available()) {
+    Serial.write(file.read());  // Imprime el JSON crudo
+  }
+  file.close();
+  Serial.println("\n📤 [dumpDataJsonToSerial] Fin del volcado.");
+}
+
+/* New Start WiFi */
+void initWiFi() {
+  if (ssid.isEmpty() || pass.isEmpty()) {
+    Serial.println("⚠️ SSID o contraseña no definidos. No se intentará conectar a WiFi.");
+    updateErrorLog("", "", "Credenciales vacías");
+    return;
+  }
   Serial.print("Conectando a ");
-  Serial.print(ssid);
-  Serial.println("...");
+  Serial.println(ssid);
+  WiFi.begin(ssid.c_str(), pass.c_str());
   int tries = 0;
   state = WiFi.status();
   unsigned long initTime = millis();
-  const unsigned long interval = 5000;   // 5 segundos
-  const unsigned long waitTime = 15000;  // 15 segundos
+  const unsigned long interval = 5000;
+  const unsigned long waitTime = 15000;
   while (state != WL_CONNECTED && tries < MAX_CONNECT) {
     currentMillis = millis();
     if (currentMillis - initTime >= interval) {
-      Serial.print("...Intento de conectar a la red WiFi ");
-      Serial.print(ssid);
-      Serial.print(": ");
-      Serial.println(tries + 1);
+      Serial.printf("...Intento %d a la red WiFi %s\n", tries + 1, ssid.c_str());
       if (state != WL_CONNECTED && (currentMillis - initTime >= waitTime)) {
         WiFi.reconnect();
-        initTime = millis();  // Reiniciar temporizador después de intentar reconexión
+        initTime = millis();  // Reiniciar contador
       } else {
         initTime = millis();
       }
       state = WiFi.status();
       tries++;
     }
-    // 🔁 Aquí puedes ejecutar otras tareas si quieres
   }
   if (state == WL_CONNECTED) {
-    Serial.println("\n\n✅ Conexión WiFi exitosa!!!");
+    Serial.println("\n✅ Conexión WiFi exitosa!!!");
     Serial.print("📡 IP: ");
     Serial.println(WiFi.localIP());
+    updateErrorLog("", "", "");  // Limpiamos errores WiFi anteriores
     NTPsincro();
   } else {
-    Serial.println("\n\n❌ No se pudo conectar a la red WiFi.");
+    Serial.println("\n❌ No se pudo conectar a la red WiFi.");
+    String wifiError;
+    switch (WiFi.status()) {
+      case WL_NO_SSID_AVAIL:   wifiError = "SSID no disponible"; break;
+      case WL_CONNECT_FAILED:  wifiError = "Fallo de autenticación"; break;
+      case WL_DISCONNECTED:    wifiError = "Desconectado"; break;
+      case WL_IDLE_STATUS:     wifiError = "Estado inactivo"; break;
+      default:                 wifiError = "Error WiFi desconocido"; break;
+    }
+    updateErrorLog("", "", wifiError);
   }
 }
 /* Check WiFi Reconnection */
@@ -678,7 +705,8 @@ void handleWiFiReconnection() {
     lastConnectionTry = millis();                     // Actualizar el tiempo del último chequeo
     if(WiFi.status() != WL_CONNECTED){
       Serial.println("Conexión WiFi perdida. Intentando reconectar...");
-      InitWiFi();
+      initWiFi();
+      updateErrorLog("wifi", "WiFi reconnection failed", getCurrentDateKey());
     }
     Serial.println("Conexión WiFi estable. ");
   }
@@ -767,12 +795,32 @@ void loadErrorLogFromJson() {
     Serial.println("❌ Error al leer errores desde data.json");
     return;
   }
-  showErrorMail = doc["errores"]["envio"] | " No mail errors ";
-  showErrorMailConnect = doc["errores"]["smtp"] | " No SMTP connect error ";
-  Serial.print("📩 Error enviando mails almacenado: ");
-  Serial.println(showErrorMail);
-  Serial.print("📡 Error conectando con SMTP almacenado: ");
-  Serial.println(showErrorMailConnect);
+  JsonObject errores = doc["errores"];
+  showErrorMail        = errores["envio"]       | " No mail errors ";
+  showErrorMailConnect = errores["smtp"]        | " No SMTP connect error ";
+  showErrorWiFi        = errores["wifi"]        | " No WiFi error ";
+  fechaSMTP            = errores["fechaSMTP"]   | "-";
+  fechaEnvio           = errores["fechaEnvio"]  | "-";
+  fechaWiFi            = errores["fechaWiFi"]   | "-";
+  smtpCount            = errores["smtpCount"]   | 0;
+  envioCount           = errores["envioCount"]  | 0;
+  wifiCount            = errores["wifiCount"]   | 0;
+  // Mostrar en el monitor serial
+  Serial.println("📩 Error almacenado - Envío mail:");
+  Serial.printf("• %s (x%d) | Última vez: %s\n", showErrorMail.c_str(), envioCount, fechaEnvio.c_str());
+  Serial.println("📡 Error almacenado - Conexión SMTP:");
+  Serial.printf("• %s (x%d) | Última vez: %s\n", showErrorMailConnect.c_str(), smtpCount, fechaSMTP.c_str());
+  Serial.println("📶 Error almacenado - WiFi:");
+  Serial.printf("• %s (x%d) | Última vez: %s\n", showErrorWiFi.c_str(), wifiCount, fechaWiFi.c_str());
+  // Resumen para insertar en los mails
+  snprintf(errorBuffer, sizeof(errorBuffer),
+         "• Conexión SMTP: %s (x%d, %s)\n"
+         "• Envío de correo: %s (x%d, %s)\n"
+         "• Error WiFi: %s (x%d, %s)",
+         showErrorMailConnect.c_str(), smtpCount, fechaSMTP.c_str(),
+         showErrorMail.c_str(), envioCount, fechaEnvio.c_str(),
+         showErrorWiFi.c_str(), wifiCount, fechaWiFi.c_str());
+  showErrorSummary = String(errorBuffer);
 }
 void clearOldDataIfNewYear() {
   if (!autoCleanAnnualData) return;
@@ -836,23 +884,24 @@ void mailStartSystem() {
         "• Límite de humedad: %d%%\n"
         "• Horario de riego: %s - %s\n"
         "• Humedad actual del sustrato: %d%%\n\n"
-        "✅ El sistema está listo y en funcionamiento.",
+        "✅ El sistema está listo y en funcionamiento."
+        "⚠️ *Errores recientes en el sistema:*\n%s\n",
         idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
         dripTimeLimit, dripHumidityLimit,
         startTime.c_str(), endTime.c_str(),
-        substrateHumidity);
+        substrateHumidity, showErrorSummary.c_str());
   finalMessage = String(textMsg);
   mailStartSDS.text.content = finalMessage.c_str();
   mailStartSDS.text.charSet = "us-ascii";
   mailStartSDS.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailStartSDS.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
-    updateErrorLog(smtp.errorReason(), showErrorMail);
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
   if (!MailClient.sendMail(&smtp, &mailStartSDS)) {
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
-  } else {
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
+  }else {
     Serial.println("📩 Mail de inicio de sistema enviado.");
   }
   ESP_MAIL_PRINTF("🧠 Memoria tras envío: %d\n", MailClient.getFreeHeap());
@@ -885,9 +934,7 @@ void mailActiveSchedule() {
         "• Total: %d bytes\n"
         "• Usada: %d bytes\n"
         "• Libre: %d bytes\n\n"
-        "⚠️ *Errores recientes en correo:*\n"
-        "• Conexión SMTP: %s\n"
-        "• Envío de correo: %s\n",
+        "⚠️ *Errores recientes en el sistema:*\n%s\n",
         idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
         date.c_str(), nowTime.c_str(),
         dripTimeLimit, dripHumidityLimit,
@@ -898,18 +945,18 @@ void mailActiveSchedule() {
         dripActived ? "Sí" : "No",
         currentMonth, message.c_str(),
         totalHeap, usedHeap, freeHeap,
-        showErrorMailConnect.c_str(), showErrorMail.c_str());
+        showErrorSummary.c_str());
   finalMessage = String(textMsg);
   mailActivSchedule.text.content = finalMessage.c_str();
   mailActivSchedule.text.charSet = "us-ascii";
   mailActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
-    updateErrorLog(smtp.errorReason(), showErrorMail);
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
   if (!MailClient.sendMail(&smtp, &mailActivSchedule)) {
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
   } else {
     Serial.println("✅ Correo enviado con éxito");
   }
@@ -942,9 +989,7 @@ void mailNoActiveSchedule() {
         "• Total: %d bytes\n"
         "• Usada: %d bytes\n"
         "• Libre: %d bytes\n\n"
-        "⚠️ *Errores recientes en correo:*\n"
-        "• Conexión SMTP: %s\n"
-        "• Envío de correo: %s\n",
+        "⚠️ *Errores recientes en el sistema:*\n%s\n",
         idSmartDrip.c_str(), idUser.c_str(), idSDHex.c_str(),
         date.c_str(), nowTime.c_str(),
         dripTimeLimit, dripHumidityLimit,
@@ -955,18 +1000,18 @@ void mailNoActiveSchedule() {
         dripActived ? "Sí" : "No",
         currentMonth, message.c_str(),
         totalHeap, usedHeap, freeHeap,
-        showErrorMailConnect.c_str(), showErrorMail.c_str());
+        showErrorSummary.c_str());
   finalMessage = String(textMsg);                         
   mailNoActivSchedule.text.content = finalMessage.c_str();
   mailNoActivSchedule.text.charSet = "us-ascii";
   mailNoActivSchedule.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailNoActivSchedule.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    updateErrorLog(smtp.errorReason(), showErrorMail);                                 
+  if (!smtp.connect(&session)) {
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailNoActivSchedule)){
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+  if (!MailClient.sendMail(&smtp, &mailNoActivSchedule)) {
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
   } else {
     Serial.println("📧 Correo enviado con éxito");
   }
@@ -999,11 +1044,11 @@ void mailSmartDripOn() {
   mailDripOn.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOn.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
-    updateErrorLog(smtp.errorReason(), showErrorMail);
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
   if (!MailClient.sendMail(&smtp, &mailDripOn)) {
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
   } else {
     Serial.println("📩 Mail de inicio de riego enviado.");
   }
@@ -1041,11 +1086,11 @@ void mailSmartDripOff() {
   mailDripOff.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailDripOff.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
-    updateErrorLog(smtp.errorReason(), showErrorMail);
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
   if (!MailClient.sendMail(&smtp, &mailDripOff)) {
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
   } else {
     Serial.println("📩 Mail de fin de riego enviado.");
   }
@@ -1091,11 +1136,11 @@ void mailAnnualReport() {
   mailAnualReport.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailAnualReport.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
   if (!smtp.connect(&session)) {
-    updateErrorLog(smtp.errorReason(), showErrorMail);
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
   if (!MailClient.sendMail(&smtp, &mailAnualReport)) {
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
   } else {
     Serial.println("📧 Informe anual enviado correctamente");
     mailAnnualReportSended = true;
@@ -1118,13 +1163,13 @@ void mailErrorValve(){
   mailErrValve.text.charSet = "us-ascii";
   mailErrValve.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrValve.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    updateErrorLog(smtp.errorReason(), showErrorMail);                                
+  if (!smtp.connect(&session)) {
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailErrValve)){
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
-  }else{
+  if (!MailClient.sendMail(&smtp, &mailErrValve)) {
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
+  } else{
     Serial.println("Correo enviado con exito");
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 
@@ -1145,13 +1190,13 @@ void mailErrorDHT11(){
   mailErrorDHT.text.charSet = "us-ascii";
   mailErrorDHT.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorDHT.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    updateErrorLog(smtp.errorReason(), showErrorMail);                                  
+  if (!smtp.connect(&session)) {
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailErrorDHT)){
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
-  }else{
+  if (!MailClient.sendMail(&smtp, &mailErrorDHT)) {
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
+  } else{
     Serial.println("Correo enviado con exito");
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap());
@@ -1173,13 +1218,13 @@ void mailErrorSensorHigro(){
   mailErrorHigro.text.charSet = "us-ascii";
   mailErrorHigro.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
   mailErrorHigro.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_normal;
-  if(!smtp.connect(&session)){
-    updateErrorLog(smtp.errorReason(), showErrorMail);                                  
+  if (!smtp.connect(&session)) {
+    updateErrorLog("smtp", smtp.errorReason(), getCurrentDateKey());
     return;
   }
-  if(!MailClient.sendMail(&smtp, &mailErrorHigro)){
-    updateErrorLog(smtp.errorReason(), showErrorMailConnect);
-  }else{
+  if (!MailClient.sendMail(&smtp, &mailErrorHigro)) {
+    updateErrorLog("envio", smtp.errorReason(), getCurrentDateKey());
+  } else{
     Serial.println("Correo enviado con exito");
   }
   ESP_MAIL_PRINTF("Liberar memoria: %d/n", MailClient.getFreeHeap()); 

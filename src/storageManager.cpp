@@ -149,16 +149,23 @@ void checkStorageFile() {
   }
   Serial.printf("📊 Se mostraron %d días con datos del mes más reciente.\n", count);
 }
-
-void updateErrorLog(String smtpError, String mailError) {
+void updateErrorLog(const String& tipoError, const String& mensajeError, const String& fecha) {
   File file = LittleFS.open("/data.json", "r");
   DynamicJsonDocument doc(4096);
   if (file) {
     deserializeJson(doc, file);
     file.close();
   }
-  doc["errores"]["smtp"] = smtpError;
-  doc["errores"]["envio"] = mailError;
+  JsonObject errores = doc["errores"];
+  if (!errores.containsKey(tipoError)) {
+    errores[tipoError] = mensajeError;
+    errores["fecha" + tipoError] = fecha;
+    errores[tipoError + "Count"] = 1;
+  } else {
+    errores[tipoError] = mensajeError;
+    errores["fecha" + tipoError] = fecha;
+    errores[tipoError + "Count"] = errores[tipoError + "Count"].as<int>() + 1;
+  }
   file = LittleFS.open("/data.json", "w");
   if (!file) {
     Serial.println("❌ No se pudo abrir data.json para escritura");

@@ -55,7 +55,7 @@ String encryptAndEncode(const String &plainText, const String &key) {
 // 📥 Cargar configuración desde config.json
 void loadConfigFromJson() {
   Serial.println("\n📥 [loadConfigFromJson] Iniciando lectura de config.json...");
-  File file = LittleFS.open("/config.json", "r");
+  File file = LittleFS.open("/config/config.json", "r");
   if (!file) {
     Serial.println("❌ [loadConfigFromJson] No se pudo abrir config.json");
     return;
@@ -105,7 +105,7 @@ void loadConfigFromJson() {
 // 💾 Guardar configuración WiFi (básica)
 void saveConfigToJson() {
   Serial.println("\n💾 [saveConfigToJson] Iniciando guardado de configuración WiFi...");
-  File file = LittleFS.open("/config.json", "r");
+  File file = LittleFS.open("/config/config.json", "r");
   DynamicJsonDocument doc(1024);
   bool canWrite = true;
   if (file) {
@@ -129,7 +129,7 @@ void saveConfigToJson() {
   doc["wifi"]["pass"] = encryptAndEncode(pass, idUser);
   Serial.println("📄 [saveConfigToJson] Configuración que se va a guardar:");
   serializeJsonPretty(doc, Serial);
-  file = LittleFS.open("/config.json", "w");
+  file = LittleFS.open("/config/config.json", "w");
   if (!file) {
     Serial.println("❌ [saveConfigToJson] No se pudo abrir config.json para escritura");
     return;
