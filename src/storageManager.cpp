@@ -1,4 +1,5 @@
 #include "storageManager.h"
+#include "mailManager.h"
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <LittleFS.h>
@@ -150,33 +151,62 @@ void checkStorageFile() {
   Serial.printf("📊 Se mostraron %d días con datos del mes más reciente.\n", count);
 }
 void updateErrorLog(const String& tipoError, const String& mensajeError, const String& fecha) {
-  File file = LittleFS.open("/data.json", "r");
+  const char* path = "/errors/errors.json";
   DynamicJsonDocument doc(4096);
+  File file = LittleFS.open(path, "r");
   if (file) {
-    deserializeJson(doc, file);
+    DeserializationError err = deserializeJson(doc, file);
+    if (err) {
+      Serial.println("⚠️ Error al leer errors.json, se creará uno nuevo.");
+      doc.clear();
+    }
     file.close();
   }
   JsonObject errores = doc["errores"];
+  char claveFecha[32];
+  char claveCount[32];
+  snprintf(claveFecha, sizeof(claveFecha), "fecha%s", tipoError.c_str());
+  snprintf(claveCount, sizeof(claveCount), "%sCount", tipoError.c_str());
   if (!errores.containsKey(tipoError)) {
     errores[tipoError] = mensajeError;
-    errores["fecha" + tipoError] = fecha;
-    errores[tipoError + "Count"] = 1;
+    errores[claveFecha] = fecha;
+    errores[claveCount] = 1;
   } else {
     errores[tipoError] = mensajeError;
-    errores["fecha" + tipoError] = fecha;
-    errores[tipoError + "Count"] = errores[tipoError + "Count"].as<int>() + 1;
+    errores[claveFecha] = fecha;
+    errores[claveCount] = errores[claveCount].as<int>() + 1;
   }
-  file = LittleFS.open("/data.json", "w");
+  file = LittleFS.open(path, "w");
   if (!file) {
-    Serial.println("❌ No se pudo abrir data.json para escritura");
+    Serial.println("❌ No se pudo abrir errors.json para escritura");
     return;
   }
   if (serializeJsonPretty(doc, file) == 0) {
-    Serial.println("❌ Error al guardar errores en data.json");
+    Serial.println("❌ Error al guardar errores en errors.json");
   } else {
-    Serial.println("📌 Errores actualizados en data.json");
+    Serial.println("📌 Errores actualizados en errors.json");
   }
   file.close();
+  generateErrorSummaryFromDoc(errores);
+}
+void generateErrorSummaryFromDoc(JsonObject errores) {
+  showErrorMail        = errores["envio"]       | " No mail errors ";
+  showErrorMailConnect = errores["smtp"]        | " No SMTP connect error ";
+  showErrorWiFi        = errores["wifi"]        | " No WiFi error ";
+  fechaSMTP            = errores["fechaSMTP"]   | "-";
+  fechaEnvio           = errores["fechaEnvio"]  | "-";
+  fechaWiFi            = errores["fechaWiFi"]   | "-";
+  smtpCount            = errores["smtpCount"]   | 0;
+  envioCount           = errores["envioCount"]  | 0;
+  wifiCount            = errores["wifiCount"]   | 0;
+  snprintf(errorBuffer, sizeof(errorBuffer),
+         "• Conexión SMTP: %s (x%d, %s)\n"
+         "• Envío de correo: %s (x%d, %s)\n"
+         "• Error WiFi: %s (x%d, %s)",
+         showErrorMailConnect.c_str(), smtpCount, fechaSMTP.c_str(),
+         showErrorMail.c_str(), envioCount, fechaEnvio.c_str(),
+         showErrorWiFi.c_str(), wifiCount, fechaWiFi.c_str());
+  showErrorSummary = String(errorBuffer);
 }
 void printDailyData() {
   File file = LittleFS.open("/data.json", "r");

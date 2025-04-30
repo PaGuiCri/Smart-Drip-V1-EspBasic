@@ -8,6 +8,10 @@ extern int dripTimeLimit, dripHumidityLimit;
 unsigned long idNumber = 0;
 String idUser = "", idSmartDrip = "", idSDHex = "";
 String ssid = "", pass = "";
+String smtpServer = "smtp.gmail.com";
+int smtpPort = 465;
+String smtpEmail = "";
+String smtpPass = "";
 
 // 🔁 XOR simétrico
 String xorEncryptDecrypt(const String &input, const String &key) {
@@ -63,7 +67,7 @@ void loadConfigFromJson() {
   Serial.println("📄 [loadConfigFromJson] Contenido bruto del archivo:");
   while (file.available()) Serial.write(file.read());
   file.seek(0);
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   DeserializationError error = deserializeJson(doc, file);
   file.close();
   if (error) {
@@ -71,29 +75,37 @@ void loadConfigFromJson() {
     Serial.println(error.c_str());
     return;
   }
-  // Extraer campos
-  idUser = doc["config"]["idUser"].as<String>();
-  idSmartDrip = doc["config"]["idSmartDrip"].as<String>();
-  idSDHex = doc["config"]["idSDHex"].as<String>();
-  startTime = doc["watering"]["start_time"].as<String>();
-  endTime = doc["watering"]["end_time"].as<String>();
-  dripTimeLimit = doc["watering"]["duration_minutes"];
-  dripHumidityLimit = doc["watering"]["humidity_threshold"];
+  // Extraer campos generales
+  idUser = doc["config"]["idUser"] | "";
+  idSmartDrip = doc["config"]["idSmartDrip"] | "";
+  idSDHex = doc["config"]["idSDHex"] | "";
+  startTime = doc["watering"]["start_time"] | "08:00";
+  endTime = doc["watering"]["end_time"] | "10:00";
+  dripTimeLimit = doc["watering"]["duration_minutes"] | 5;
+  dripHumidityLimit = doc["watering"]["humidity_threshold"] | 40;
+  // === WiFi ===
   String ssidHex = doc["wifi"]["ssid"] | "";
   String passHex = doc["wifi"]["pass"] | "";
-  // Mostrar paso a paso la decodificación
-  Serial.println("\n📊 [loadConfigFromJson] DECODIFICANDO CREDENCIALES");
-  Serial.printf("🔑 Clave XOR (idUser): %s\n", idUser.c_str());
-  Serial.printf("📦 SSID HEX:           %s\n", ssidHex.c_str());
-  Serial.printf("📦 PASS HEX:           %s\n", passHex.c_str());
   String ssidDecoded = hexToString(ssidHex);
   String passDecoded = hexToString(passHex);
-  Serial.printf("🔁 SSID XOR Input:     %s\n", ssidDecoded.c_str());
-  Serial.printf("🔁 PASS XOR Input:     %s\n", passDecoded.c_str());
   ssid = xorEncryptDecrypt(ssidDecoded, idUser);
   pass = xorEncryptDecrypt(passDecoded, idUser);
+  // === SMTP ===
+  smtpServer = doc["smtp"]["server"] | "smtp.gmail.com";
+  smtpPort   = doc["smtp"]["port"]   | 465;
+  String smtpEmailHex = doc["smtp"]["email"] | "";
+  String smtpPassHex  = doc["smtp"]["pass"]  | "";
+  String smtpEmailDecoded = hexToString(smtpEmailHex);
+  String smtpPassDecoded  = hexToString(smtpPassHex);
+  smtpEmail = xorEncryptDecrypt(smtpEmailDecoded, idUser);
+  smtpPass  = xorEncryptDecrypt(smtpPassDecoded, idUser);
+  // === Debug info ===
+  Serial.println("\n📊 [loadConfigFromJson] DECODIFICANDO CREDENCIALES");
+  Serial.printf("🔑 Clave XOR (idUser): %s\n", idUser.c_str());
   Serial.printf("📶 SSID final:         %s\n", ssid.c_str());
   Serial.printf("🔒 PASS final:         %s\n", pass.c_str());
+  Serial.printf("📧 Email SMTP:         %s\n", smtpEmail.c_str());
+  Serial.printf("🔑 Clave SMTP:         %s\n", smtpPass.c_str());
   idNumber = strtoul(idSDHex.c_str(), nullptr, 16);
   Serial.println("✔ [loadConfigFromJson] Configuración cargada correctamente:");
   Serial.printf("👤 Usuario: %s | Dispositivo: %s | ID Hex: %s | ID Num: %lu\n",
@@ -104,7 +116,7 @@ void loadConfigFromJson() {
 }
 // 💾 Guardar configuración WiFi (básica)
 void saveConfigToJson() {
-  Serial.println("\n💾 [saveConfigToJson] Iniciando guardado de configuración WiFi...");
+  Serial.println("\n💾 [saveConfigToJson] Iniciando guardado de configuración WiFi y SMTP...");
   File file = LittleFS.open("/config/config.json", "r");
   DynamicJsonDocument doc(1024);
   bool canWrite = true;
@@ -124,9 +136,14 @@ void saveConfigToJson() {
     Serial.println("❌ [saveConfigToJson] Abortado para evitar sobrescritura incorrecta.");
     return;
   }
-  // Actualizar campos
+  // Actualizar campos WiFi
   doc["wifi"]["ssid"] = encryptAndEncode(ssid, idUser);
   doc["wifi"]["pass"] = encryptAndEncode(pass, idUser);
+  // Actualizar campos SMTP
+  doc["smtp"]["server"] = smtpServer;
+  doc["smtp"]["port"] = smtpPort;
+  doc["smtp"]["email"] = encryptAndEncode(smtpEmail, idUser);
+  doc["smtp"]["pass"]  = encryptAndEncode(smtpPass, idUser);
   Serial.println("📄 [saveConfigToJson] Configuración que se va a guardar:");
   serializeJsonPretty(doc, Serial);
   file = LittleFS.open("/config/config.json", "w");

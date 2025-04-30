@@ -15,6 +15,8 @@ String getCurrentDateKey();
 void checkStorageFile();
 // ✅ Nueva versión: actualiza cualquier tipo de error (smtp, envio, wifi, etc.)
 void updateErrorLog(const String& tipoError, const String& mensajeError, const String& fecha);
+// Carga errores desde errors.json y genere un resumen
+void generateErrorSummaryFromDoc(JsonObject errores);
 // Imprime por Serial todos los datos diarios (debug)
 void printDailyData();
 // Devuelve los datos de un mes como string. Si debug = true, los imprime por Serial también

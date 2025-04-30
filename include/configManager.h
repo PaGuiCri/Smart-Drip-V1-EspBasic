@@ -8,6 +8,8 @@ extern String idUser;
 extern String idSmartDrip;
 extern String idSDHex;
 extern unsigned long idNumber;
+extern int smtpPort;
+extern String smtpServer, smtpEmail, smtpPass;
 void loadConfigFromJson();  // Carga los datos del archivo config.json
 void saveConfigToJson();    // Guarda los datos en el archivo config.json
 String xorEncryptDecrypt(const String &input, const String &key);
