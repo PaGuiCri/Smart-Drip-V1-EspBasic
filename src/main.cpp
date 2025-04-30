@@ -166,11 +166,11 @@ void setup() {
   createAndVerifyID();          // Crear y guardar ID único si no existe
   loadErrorLogFromJson();       // Cargar errores anteriores desde JSON
   initWiFi();                   // Conexión WiFi
-  // 🛠 Solo si necesitas el backup (descomentalo si hace falta)
-  //if (Serial) {
-  //   delay(2000);
-  //   dumpDataJsonToSerial();
-  //}
+  // 🛠 Solo si necesitas el backup
+  if (debugPrintJson) {
+     delay(2000);
+     dumpDataJsonToSerial();
+  }
   // Mostrar datos cargados
   Serial.println("🔧 Configuración inicial finalizada:");
   Serial.print("🆔 ID SmartDrip: ");
