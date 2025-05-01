@@ -615,7 +615,7 @@ void dumpDataJsonToSerial() {
 void initWiFi() {
   if (ssid.isEmpty() || pass.isEmpty()) {
     Serial.println("⚠️ SSID o contraseña no definidos. No se intentará conectar a WiFi.");
-    updateErrorLog("", "", "Credenciales vacías");
+    updateErrorLog("wifi", "Credenciales WiFi vacías", getCurrentDateKey());
     return;
   }
   Serial.print("Conectando a ");
@@ -644,7 +644,7 @@ void initWiFi() {
     Serial.println("\n✅ Conexión WiFi exitosa!!!");
     Serial.print("📡 IP: ");
     Serial.println(WiFi.localIP());
-    updateErrorLog("", "", "");  // Limpiamos errores WiFi anteriores
+    updateErrorLog("wifi", "No WiFi error", getCurrentDateKey());       // Limpiamos errores WiFi anteriores
     NTPsincro();
   } else {
     Serial.println("\n❌ No se pudo conectar a la red WiFi.");
@@ -656,7 +656,7 @@ void initWiFi() {
       case WL_IDLE_STATUS:     wifiError = "Estado inactivo"; break;
       default:                 wifiError = "Error WiFi desconocido"; break;
     }
-    updateErrorLog("", "", wifiError);
+    updateErrorLog("wifi", wifiError, getCurrentDateKey());
   }
 }
 /* Check WiFi Reconnection */
